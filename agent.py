@@ -22,6 +22,8 @@ class AgentBase:
         self.has_goal = False
         self.goal = None  # waypoint in world coords
         self.comm_ok = True
+        self.father_id = None  # LargeAgent id
+        self.son_ids = []  # assigned small Agent ids
         self.hist = [self.pos]
         self.is_large = is_large  # LargeAgent flag
         # default behavior
