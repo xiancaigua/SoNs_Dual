@@ -375,6 +375,97 @@ class World:
             except Exception as e:
                 print(f"Error in periodic communication for agent {a.id}: {e}")
 
+    def update_data_collect(self, dt, comms:Communication, now_time):
+        self.time += dt
+        # 1) 更新每个代理的感知信息 -> 更新 local_map
+        for a in self.agents + self.large_agents:
+            if not a.alive:
+                continue
+            try:
+                a.update_local_map_from_sensing(self)
+            except Exception as e:
+                print(f"Error updating local map for agent {a.id}: {e}")
+
+        # 2) deliver communications queued
+        deliveries = comms.deliver(now_time)
+        for sender, receiver, msg in deliveries:
+            # msg dispatch
+            if msg.get('type') == 'map_patch':
+                # receiver should integrate patch
+                if isinstance(receiver, LargeAgent):
+                    receiver.integrate_map_patch(msg['patch'])
+            elif msg.get('type') == 'rescue_alert':
+                # receiver may prioritize moving to victim
+                if isinstance(receiver, AgentBase):
+                    receiver.has_goal = True
+                    receiver.goal = msg['pos']
+
+        # 3) Large agents perform reasoning (System 2)
+        for la in self.large_agents:
+            if not la.alive:
+                continue
+            try:
+                # 限制推理频率
+                if now_time - la.last_reason_time >= BRAIN_REASON_INTERVAL:
+                    la.reason_and_assign(self.agents, now_time)
+                    la.last_reason_time = now_time
+
+            except Exception as e:
+                print(f"Error in reasoning or task assignment for large agent {la.id}: {e}")
+
+        # 4) Agents decide & move
+        for a in self.agents:
+            if not a.alive:
+                continue
+            try:
+                sense = a.sense(self)
+                desired_vx, desired_vy = a.behavior.decide(a, sense, dt)
+                # 限制速度范围
+                speed = math.hypot(desired_vx, desired_vy)
+                if speed > AGENT_MAX_SPEED:
+                    scale = AGENT_MAX_SPEED / (speed + 1e-9)
+                    desired_vx *= scale
+                    desired_vy *= scale
+                a.step_motion(desired_vx, desired_vy, dt, self)
+
+                # 更新已访问的网格单元
+                ci, cj = cell_of_pos(a.pos)
+                self.grid_visited_union.add((ci, cj))
+            except Exception as e:
+                print(f"Error in decision or motion for agent {a.id}: {e}")
+        for la in self.large_agents:
+            if not la.alive:
+                continue
+            try:
+                sense = la.sense(self)
+                desired_vx, desired_vy = la.behavior.decide(a, sense, dt)
+                # 限制速度范围
+                speed = math.hypot(desired_vx, desired_vy)
+                if speed > AGENT_MAX_SPEED:
+                    scale = AGENT_MAX_SPEED / (speed + 1e-9)
+                    desired_vx *= scale
+                    desired_vy *= scale
+                la.step_motion(desired_vx, desired_vy, dt, self)
+
+                # 更新已访问的网格单元
+                ci, cj = cell_of_pos(la.pos)
+                self.grid_visited_union.add((ci, cj))
+            except Exception as e:
+                print(f"Error in decision or motion for large agent {la.id}: {e}")
+
+        # 5) periodic communications: small agents send map patches to large agents if within range
+        for a in self.agents:
+            if not a.alive:
+                continue
+            try:
+                for la in self.large_agents:
+                    if not la.alive:
+                        continue
+                    if distance(a.pos, la.pos) <= AGENT_COMM_RANGE:
+                        a.send_map_patch(comms, [la], now_time)
+            except Exception as e:
+                print(f"Error in periodic communication for agent {a.id}: {e}")
+
     def update_baseline(self, dt, comms:Communication, now_time):
         self.time += dt
         # 1) 更新每个代理的感知信息 -> 更新 local_map

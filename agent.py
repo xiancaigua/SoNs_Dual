@@ -11,7 +11,7 @@ from utils import *
 # -----------------------------
 
 class AgentBase:
-    def __init__(self, id_, x, y, sensor_range=SENSOR_SMALL, is_large=False):
+    def __init__(self, id_, x, y, sensor_range=SENSOR_SMALL, is_large=False, behavior=None):
         self.id = id_
         self.pos = (x, y)
         angle = random.random()*2*math.pi
@@ -27,7 +27,10 @@ class AgentBase:
         self.hist = [self.pos]
         self.is_large = is_large  # LargeAgent flag
         # default behavior
-        self.behavior = ReactiveBehavior() if not is_large else ExploreBehavior()
+        if behavior is not None:
+            self.behavior = behavior
+        else:
+            self.behavior = ReactiveBehavior() if not is_large else ExploreBehavior()
 
     # 环境感知：返回用于行为决策的局部信息（近障碍、危险区、victim）
     def sense(self, env):
@@ -153,14 +156,17 @@ class AgentBase:
             screen.blit(surf, (int(self.pos[0]-self.sensor_range), int(self.pos[1]-self.sensor_range)))
 
 class LargeAgent(AgentBase):
-    def __init__(self, id_, x, y, is_brain=False):
-        super().__init__(id_, x, y, sensor_range=SENSOR_LARGE, is_large=True)
-        self.multi_behavior = easyFrontierAssignmentBehavior()
+    def __init__(self, id_, x, y, is_brain=False, behavior=None ,multi_behavior=None):
+        super().__init__(id_, x, y, sensor_range=SENSOR_LARGE, is_large=True, behavior=behavior)
         self.behavior = ExploreBehavior()
         self.last_reason_time = time.time()
         self.known_map = np.full((GRID_W, GRID_H), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
         self.assigned = {}  # agent_id -> waypoint
         self.is_brain = is_brain  # LargeAgent作为脑节点
+        if multi_behavior is not None:
+            self.multi_behavior = multi_behavior
+        else:
+            self.multi_behavior = easyFrontierAssignmentBehavior()
 
     def integrate_map_patch(self, patch):
         """将收到的patch应用到自己的known_map"""
