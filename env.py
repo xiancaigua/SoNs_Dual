@@ -11,6 +11,7 @@ from parameters import *
 from utils import *
 from communicate import Communication
 from agent import AgentBase, LargeAgent
+from behaviors import *
 # -----------------------------
 # 环境元素类
 # -----------------------------
@@ -183,12 +184,14 @@ class World:
                 y = clamp(y, 0, WORLD_H)
 
                 if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
-                    self.large_agents.append(LargeAgent(i, x, y))
+                    self.large_agents.append(LargeAgent(i, x, y,\
+                                                        multi_behavior=ERRTFrontierAssignmentBehavior()))
                     break
             else:
                 # 如果找不到合适位置，则直接使用base_pos附近
                 self.large_agents.append(LargeAgent(i, base_pos[0] + random.uniform(-10, 10),
-                                                    base_pos[1] + random.uniform(-10, 10)))
+                                                    base_pos[1] + random.uniform(-10, 10),
+                                                    multi_behavior=ERRTFrontierAssignmentBehavior()))
         if self.large_agents:
             brain_node = min(self.large_agents, key=lambda a: a.id)
             brain_node.is_brain = True
@@ -214,7 +217,7 @@ class World:
                 # 检查是否在自由空间中
                 if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
                     # 创建小节点
-                    self.agents.append(AgentBase(i + 1000, x, y))
+                    self.agents.append(AgentBase(i + 1000, x, y, behavior=PathPlanningBehavior()))
                     break
                 attempts += 1
             else:
@@ -277,7 +280,14 @@ class World:
         return None
 
     def update(self, dt, comms:Communication, now_time):
+        # Tik
         self.time += dt
+
+        victim_pos = self.victim.pos
+        victim_cell = cell_of_pos(victim_pos)
+        if self.large_agents[0].known_map[victim_cell[0], victim_cell[1]] != UNKNOWN:
+            self.victim.rescued = True
+
         # 1) 更新每个代理的感知信息 -> 更新 local_map
         for a in self.agents + self.large_agents:
             if not a.alive:
@@ -289,6 +299,7 @@ class World:
 
         # 2) deliver communications queued
         # TODO: multi-step communication process
+        # 多机器人系统之间的层级化的结构与信息互通
         """
         1. 脑节点给大节点分配任务组
         2. 大节点给小节点分配逐个任务
@@ -316,8 +327,13 @@ class World:
             try:
                 # 限制推理频率
                 if now_time - la.last_reason_time >= BRAIN_REASON_INTERVAL:
-                    la.reason_and_assign(self.agents, now_time)
+                    assigns = la.reason_and_assign(self.agents, now_time)
                     la.last_reason_time = now_time
+                    for aid, wp in assigns.items():
+                        agent = next((a for a in self.agents if a.id == aid), None)
+                        if agent is not None:
+                            agent.has_goal = True
+                            agent.goal = wp
 
             except Exception as e:
                 print(f"Error in reasoning or task assignment for large agent {la.id}: {e}")
@@ -596,9 +612,11 @@ class World:
         for la in self.large_agents:
             la.draw_hist(screen, color=(200,160,60))
             la.draw_self(screen)
+            la.draw_goal(screen)
         for a in self.agents:
             a.draw_hist(screen)
             a.draw_self(screen)
+            a.draw_goal(screen)
 
     def coverage_percentage(self):
         total = GRID_W * GRID_H

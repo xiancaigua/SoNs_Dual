@@ -35,6 +35,7 @@ def main():
     running = True
     paused = False
     sim_time = 0.0
+    simulation_result = "unknown"  # 记录仿真结果
 
     while running:
         dt = clock.tick(FPS) / 1000.0
@@ -51,6 +52,8 @@ def main():
                         running = False
                     elif event.key == pygame.K_SPACE:
                         paused = not paused
+                    elif event.key == pygame.K_s:  # 手动保存截图
+                        save_simulation_screenshot(screen, world, sim_time, "manual")
         if not paused:
             world.update(dt, comms, now_time)
 
@@ -76,17 +79,37 @@ def main():
 
             pygame.display.flip()
 
-        # end conditions
-        if world.victim.rescued and coverage >= 50.0:
-            print("Mission success: victim rescued and coverage >= 50%")
+        # 结束条件判断
+        if world.victim.rescued:
+            simulation_result = "success"
+            print("Mission success: victim rescued")
+            # 保存成功截图
+            if VISUALIZE:
+                final_image = create_summary_image(screen, world, sim_time, "SUCCESS", font)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                pygame.image.save(final_image, f"simulation_screenshots/success_{timestamp}.png")
             paused = True
             running = False
-        if sum(1 for a in world.agents if a.alive) == 0:
+            
+        elif sum(1 for a in world.agents if a.alive) == 0:
+            simulation_result = "failure"
             print("All small agents destroyed. Mission failed.")
+            # 保存失败截图
+            if VISUALIZE:
+                final_image = create_summary_image(screen, world, sim_time, "FAILURE", font)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                pygame.image.save(final_image, f"simulation_screenshots/failure_{timestamp}.png")
             paused = True
             running = False
-        if sim_time > 300.0:
+            
+        elif sim_time > 300.0:
+            simulation_result = "timeout"
             print("Max sim time reached.")
+            # 保存超时截图
+            if VISUALIZE:
+                final_image = create_summary_image(screen, world, sim_time, "TIMEOUT", font)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                pygame.image.save(final_image, f"simulation_screenshots/timeout_{timestamp}.png")
             paused = True
             running = False
 
@@ -98,7 +121,9 @@ def main():
     print(f"Alive: small={alive_small}/{len(world.agents)}, large={alive_large}/{len(world.large_agents)}")
     print(f"Coverage: {world.coverage_percentage():.2f}%")
     print(f"Victim rescued: {world.victim.rescued}")
-    # Agent trajectories
+    # 保存最终状态的简单截图
+    if VISUALIZE and simulation_result != "unknown":
+        save_simulation_screenshot(screen, world, sim_time, f"final_{simulation_result}")    # Agent trajectories
     for a in world.agents:
         print(f"Agent {a.id} alive={a.alive} traj_len={len(a.hist)} last={a.pos}")
     for la in world.large_agents:

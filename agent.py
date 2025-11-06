@@ -155,10 +155,46 @@ class AgentBase:
             pygame.draw.circle(surf, (50,50,50,8), (int(self.sensor_range), int(self.sensor_range)), int(self.sensor_range))
             screen.blit(surf, (int(self.pos[0]-self.sensor_range), int(self.pos[1]-self.sensor_range)))
 
+    def draw_goal(self, screen):
+        if not self.has_goal or self.goal is None:
+            return
+        """绘制目标点及其连接线"""
+        goal_x, goal_y = int(self.goal[0]), int(self.goal[1])
+        
+        # 1. 绘制从机器人到目标点的连线
+        pygame.draw.line(screen, (200, 200, 50), 
+                         (int(self.pos[0]), int(self.pos[1])), 
+                         (goal_x, goal_y), 2)
+        
+        # 2. 绘制目标点标记（不同形状表示不同类型的目标）
+        if self.is_large:
+            # 大型机器人目标点：带圆圈的十字
+            pygame.draw.circle(screen, self.current_goal_color, (goal_x, goal_y), 8, 2)
+            pygame.draw.line(screen, self.current_goal_color, (goal_x-6, goal_y), (goal_x+6, goal_y), 2)
+            pygame.draw.line(screen, self.current_goal_color, (goal_x, goal_y-6), (goal_x, goal_y+6), 2)
+        else:
+            # 小型机器人目标点：实心三角形
+            points = [
+                (goal_x, goal_y-8),
+                (goal_x-6, goal_y+6),
+                (goal_x+6, goal_y+6)
+            ]
+            pygame.draw.polygon(screen, (200, 200, 50), points)
+        
+        # 3. 绘制距离文本（可选）
+        dist = distance(self.pos, self.goal)
+        if dist > 50:  # 只在距离较远时显示距离，避免遮挡
+            font = pygame.font.SysFont('Arial', 10)
+            dist_text = f"{int(dist)}px"
+            text_surf = font.render(dist_text, True, (200, 200, 50))
+            # 在连线中点显示距离
+            mid_x = (self.pos[0] + goal_x) // 2
+            mid_y = (self.pos[1] + goal_y) // 2
+            screen.blit(text_surf, (mid_x, mid_y))
+
 class LargeAgent(AgentBase):
     def __init__(self, id_, x, y, is_brain=False, behavior=None ,multi_behavior=None):
         super().__init__(id_, x, y, sensor_range=SENSOR_LARGE, is_large=True, behavior=behavior)
-        self.behavior = ExploreBehavior()
         self.last_reason_time = time.time()
         self.known_map = np.full((GRID_W, GRID_H), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
         self.assigned = {}  # agent_id -> waypoint
@@ -200,7 +236,8 @@ class LargeAgent(AgentBase):
         # fuse own sensing
         self.fuse_own_sensing()
         # assign frontiers
-        self.multi_behavior.decide(self, agents)
+        assigns = self.multi_behavior.decide(self, agents)
+        return assigns
 
     def draw_self(self, screen):
         # draw communication range
