@@ -3,6 +3,8 @@ import random
 import sys
 import time
 import numpy as np
+import os
+from datetime import datetime
 
 from parameters import *
 from utils import *
@@ -22,7 +24,7 @@ def main():
         np.random.seed(SEED)
     if VISUALIZE:
         pygame.init()
-        screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
+        screen = pygame.display.set_mode((SCREEN_W + 400, SCREEN_H))
         pygame.display.set_caption("exploration simulation")
         clock = pygame.time.Clock()
         font = load_font()
@@ -36,6 +38,10 @@ def main():
     paused = False
     sim_time = 0.0
     simulation_result = "unknown"  # 记录仿真结果
+
+    screenshot_dir = "simulation_screenshots"
+    if not os.path.exists(screenshot_dir):
+        os.makedirs(screenshot_dir)
 
     while running:
         dt = clock.tick(FPS) / 1000.0
@@ -80,6 +86,7 @@ def main():
             pygame.display.flip()
 
         # 结束条件判断
+        print("len(world.large_agents)",len(world.large_agents))
         if world.victim.rescued:
             simulation_result = "success"
             print("Mission success: victim rescued")
@@ -90,10 +97,9 @@ def main():
                 pygame.image.save(final_image, f"simulation_screenshots/success_{timestamp}.png")
             paused = True
             running = False
-            
-        elif sum(1 for a in world.agents if a.alive) == 0:
+        elif len(world.large_agents) == 0:
             simulation_result = "failure"
-            print("All small agents destroyed. Mission failed.")
+            print("All agents destroyed. Mission failed.")
             # 保存失败截图
             if VISUALIZE:
                 final_image = create_summary_image(screen, world, sim_time, "FAILURE", font)
@@ -102,7 +108,7 @@ def main():
             paused = True
             running = False
             
-        elif sim_time > 300.0:
+        elif sim_time > 200.0:
             simulation_result = "timeout"
             print("Max sim time reached.")
             # 保存超时截图
@@ -114,24 +120,25 @@ def main():
             running = False
 
     # summary
-    print("\n=== Simulation summary ===")
-    print(f"Sim time: {sim_time:.2f}s")
-    alive_small = sum(1 for a in world.agents if a.alive)
-    alive_large = sum(1 for la in world.large_agents if la.alive)
-    print(f"Alive: small={alive_small}/{len(world.agents)}, large={alive_large}/{len(world.large_agents)}")
-    print(f"Coverage: {world.coverage_percentage():.2f}%")
-    print(f"Victim rescued: {world.victim.rescued}")
+    print_simulation_summary(world, sim_time, simulation_result)
+    
+    #--------实验总结---------
     # 保存最终状态的简单截图
     if VISUALIZE and simulation_result != "unknown":
-        save_simulation_screenshot(screen, world, sim_time, f"final_{simulation_result}")    # Agent trajectories
-    for a in world.agents:
-        print(f"Agent {a.id} alive={a.alive} traj_len={len(a.hist)} last={a.pos}")
-    for la in world.large_agents:
-        print(f"LargeAgent {la.id} alive={la.alive} known_cells={np.sum(la.known_map != UNKNOWN)}")
+        screenshot_path = save_simulation_screenshot(screen, world, sim_time, f"final_{simulation_result}")    # Agent trajectories
+    else:
+        screenshot_path = None
+    # 保存JSON总结
+    json_filename = save_simulation_summary(world, sim_time, simulation_result, screenshot_path)
 
+    # 可选：在控制台显示JSON文件路径
+    if json_filename:
+        print(f"详细仿真结果已保存为JSON文件: {json_filename}")
     if VISUALIZE:
         pygame.quit()
-    sys.exit(0)
+
 
 if __name__ == "__main__":
-    main()
+    for i in range(100):
+        main()
+    sys.exit(0)

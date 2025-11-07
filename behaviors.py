@@ -7,6 +7,7 @@ import heapq
 from scipy.optimize import linear_sum_assignment
 from utils import *
 from model import SlowModel  # 导入你的模型定义
+import matplotlib.pyplot as plt
 
 # -----------------------------
 # 行为模块（策略模式）
@@ -95,7 +96,7 @@ class PathPlanningBehavior(Behavior):
       - 随机探索时仍考虑危险与障碍的安全避让
     """
 
-    def __init__(self, replan_interval=2.0, goal_tolerance=10.0):
+    def __init__(self, replan_interval=0.5, goal_tolerance=10.0):
         super().__init__()
         self.replan_interval = replan_interval
         self.goal_tolerance = goal_tolerance
@@ -108,8 +109,7 @@ class PathPlanningBehavior(Behavior):
     # 基础：A* 路径规划
     # ======================================================
     def astar(self, grid, start, goal):
-        """在local_map上执行A*搜索"""
-        w, h = grid.shape
+        w, h = grid.shape[1], grid.shape[0]
         open_list = []
         heapq.heappush(open_list, (0, start))
         came_from = {}
@@ -121,11 +121,11 @@ class PathPlanningBehavior(Behavior):
             if current == goal:
                 return self.reconstruct_path(came_from, current)
 
-            for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
                 nx, ny = current[0]+dx, current[1]+dy
                 if 0 <= nx < w and 0 <= ny < h:
-                    val = grid[nx, ny]
-                    if val == 1 or val == 2:  # OBSTACLE or DANGER
+                    val = grid[ny, nx]   # ✅ 行列顺序修正
+                    if val in [OBSTACLE, DANGER]:  # ✅ 安全过滤
                         continue
                     tentative_g = gscore[current] + 1
                     if (nx, ny) not in gscore or tentative_g < gscore[(nx, ny)]:
@@ -133,7 +133,7 @@ class PathPlanningBehavior(Behavior):
                         gscore[(nx, ny)] = tentative_g
                         fscore[(nx, ny)] = tentative_g + self.heuristic((nx, ny), goal)
                         heapq.heappush(open_list, (fscore[(nx, ny)], (nx, ny)))
-        return None  # 无可行路径
+        return None
 
     def heuristic(self, a, b):
         """启发式函数（曼哈顿距离）"""
@@ -158,14 +158,16 @@ class PathPlanningBehavior(Behavior):
         # ---- [1] 检查是否有目标 ----
         if not agent.has_goal or agent.goal is None:
             # 无目标 → 安全随机游走
-            return self.safe_random_explore(agent, grid)
+            # return self.safe_random_explore(agent, grid)
+            return 0, 0
 
         # ---- [2] 检查是否到达目标 ----
         goal_dist = distance(agent.pos, agent.goal)
         if goal_dist < self.goal_tolerance:
             agent.has_goal = False
             agent.goal = None
-            return self.safe_random_explore(agent, grid)
+            # return self.safe_random_explore(agent, grid)
+            return 0, 0
 
         # ---- [3] 目标点是否变化？ ----
         goal_changed = (
@@ -188,7 +190,8 @@ class PathPlanningBehavior(Behavior):
             path = self.astar(grid, start_cell, goal_cell)
             if path is None:
                 # 无路径 → 安全随机游走
-                return self.safe_random_explore(agent, grid)
+                return 0, 0
+                # return self.safe_random_explore(agent, grid)
             self.cached_path = path
             self.path_index = 0
             self.last_plan_time = now
@@ -211,7 +214,8 @@ class PathPlanningBehavior(Behavior):
         # ---- [6] 路径执行完毕 ----
         agent.has_goal = False
         agent.goal = None
-        return self.safe_random_explore(agent, grid)
+        # return self.safe_random_explore(agent, grid)
+        return 0, 0
 
     # ======================================================
     # 安全随机探索逻辑
@@ -431,10 +435,13 @@ class ERRTFrontierAssignmentBehavior(Multi_Behavior):
                     nx, ny = x + dx, y + dy
                     if (0 <= nx < global_map.shape[1] and 
                         0 <= ny < global_map.shape[0]):
-                        if global_map[ny, nx] == UNKNOWN:  # 未知区域
-                            # 检查视线是否被阻挡（简化版碰撞检测）
-                            if self.line_of_sight_clear((x, y), (nx, ny), global_map):
-                                info_gain += 1
+                        try:
+                            if global_map[ny, nx] == UNKNOWN:  # 未知区域
+                                # 检查视线是否被阻挡（简化版碰撞检测）
+                                if self.line_of_sight_clear((x, y), (nx, ny), global_map):
+                                    info_gain += 1
+                        except:
+                            pass
         return info_gain
 
     def line_of_sight_clear(self, start, end, global_map):
@@ -485,21 +492,6 @@ class ERRTFrontierAssignmentBehavior(Multi_Behavior):
         """计算距离成本"""
         return np.linalg.norm(np.array(agent_pos) - np.array(goal))
 
-    def calculate_actuation_cost(self, agent, goal):
-        """估算驱动成本（基于机器人当前状态和目标位置）"""
-        # 简化版：考虑转向角度和移动距离
-        current_angle = getattr(agent, 'heading', 0)  # 假设有朝向属性
-        target_vector = np.array(goal) - np.array(agent.pos)
-        target_angle = math.atan2(target_vector[1], target_vector[0])
-        
-        # 转向角度差异（弧度）
-        angle_diff = abs((target_angle - current_angle + math.pi) % (2 * math.pi) - math.pi)
-        
-        distance = np.linalg.norm(target_vector)
-        
-        # 综合成本：距离 + 转向惩罚
-        return distance + angle_diff * 0.5
-
     def build_cost_matrix(self, agents, candidate_goals, global_map):
         """构建多目标优化的成本矩阵"""
         num_agents = len(agents)
@@ -517,13 +509,10 @@ class ERRTFrontierAssignmentBehavior(Multi_Behavior):
                 info_gain = self.calculate_information_gain(goal, global_map, agent.pos)
                 gain_cost = -info_gain  # 负号表示我们要最大化这个值
                 
-                # 驱动成本
-                actuation_cost = self.calculate_actuation_cost(agent, goal)
                 
                 # 加权总和（类似E-RRT的代价函数）
                 total_cost = (self.weights['distance'] * dist_cost +
-                            self.weights['gain'] * gain_cost +
-                            self.weights['actuation'] * actuation_cost)
+                            self.weights['gain'] * gain_cost)
                 
                 cost_matrix[i, j] = total_cost
                 
@@ -548,6 +537,14 @@ class ERRTFrontierAssignmentBehavior(Multi_Behavior):
         # 2. 构建多目标成本矩阵
         cost_matrix = self.build_cost_matrix(agents, self.candidate_goals, global_map)
         
+        # plt.imshow(global_map, cmap='viridis')
+        # x1s = [g[0]//10 for g in self.candidate_goals]
+        # y1s = [g[1]//10 for g in self.candidate_goals]
+        # x2s = [a.pos[0]//10 for a in agents]
+        # y2s = [a.pos[1]//10 for a in agents]
+        # plt.scatter(x1s, y1s, c='red', marker='x', label='Candidate Goals')
+        # plt.scatter(x2s, y2s, c='blue', marker='o', label='Agents')
+
         # 3. 使用优化算法进行分配
         try:
             row_ind, col_ind = self.optimize_assignment(cost_matrix)
@@ -564,6 +561,7 @@ class ERRTFrontierAssignmentBehavior(Multi_Behavior):
                     assignments[agent_id] = self.fallback_assignment(agents[i], global_map)
             
             self.last_assignment = assignments
+
             return assignments
             
         except Exception as e:

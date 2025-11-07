@@ -3,6 +3,9 @@ import math
 from parameters import *
 import os
 from datetime import datetime
+import json
+import numpy as np
+
 # -----------------------------
 # 工具函数
 # -----------------------------
@@ -106,3 +109,108 @@ def create_summary_image(screen, world, sim_time, result, font):
         summary_surface.blit(traj_surf, (40, traj_y + 25 + i * 20))
     
     return summary_surface
+
+def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=None):
+    """
+    将仿真结果保存为JSON文件
+    
+    参数:
+    - world: 仿真世界对象
+    - sim_time: 仿真时间
+    - simulation_result: 仿真结果（success/failure/timeout）
+    - screenshot_path: 截图文件路径（可选）
+    """
+    
+    # 创建结果目录
+    results_dir = "simulation_results"
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+    
+    # 生成时间戳和文件名
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{results_dir}/sim_summary_{timestamp}.json"
+    
+    # 收集基本统计信息
+    alive_small = sum(1 for a in world.agents if a.alive)
+    alive_large = sum(1 for la in world.large_agents if la.alive)
+    
+    # 构建JSON数据结构
+    summary_data = {
+        "metadata": {
+            "timestamp": timestamp,
+            "simulation_time": f"{sim_time:.2f}s",
+            "result": simulation_result,
+            "screenshot_path": screenshot_path
+        },
+        "statistics": {
+            "simulation_duration": sim_time,
+            "alive_small_agents": alive_small,
+            "total_small_agents": len(world.agents),
+            "alive_large_agents": alive_large,
+            "total_large_agents": len(world.large_agents),
+            "coverage_percentage": world.coverage_percentage(),
+            "victim_rescued": world.victim.rescued,
+            "obstacles_count": len(world.obstacles),
+            "danger_zones_count": len(world.danger_zones)
+        },
+        "agent_details": {
+            "small_agents": [],
+            "large_agents": []
+        }
+    }
+    
+    # 收集小型机器人详细信息
+    for agent in world.agents:
+        agent_info = {
+            "id": agent.id,
+            "alive": agent.alive,
+            "final_position": agent.pos,
+            "trajectory_length": len(agent.hist),
+            "explored_cells": len(agent.get_local_explored_cells()),
+            "has_goal": agent.has_goal,
+            "goal_position": agent.goal if agent.has_goal else None
+        }
+        summary_data["agent_details"]["small_agents"].append(agent_info)
+    
+    # 收集大型机器人详细信息
+    for large_agent in world.large_agents:
+        large_agent_info = {
+            "id": large_agent.id,
+            "alive": large_agent.alive,
+            "final_position": large_agent.pos,
+            "trajectory_length": len(large_agent.hist),
+            "known_cells": int(np.sum(large_agent.known_map != UNKNOWN)),
+            "total_cells": large_agent.known_map.size,
+            "known_percentage": (np.sum(large_agent.known_map != UNKNOWN) / large_agent.known_map.size) * 100,
+            "son_agents": large_agent.son_ids
+        }
+        summary_data["agent_details"]["large_agents"].append(large_agent_info)
+    
+    # 保存为JSON文件
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(summary_data, f, indent=2, ensure_ascii=False)
+        print(f"仿真结果已保存至: {filename}")
+        return filename
+    except Exception as e:
+        print(f"保存JSON文件失败: {e}")
+        return None
+
+def print_simulation_summary(world, sim_time, simulation_result):
+    """
+    在控制台打印仿真总结（保持原有功能）
+    """
+    print("\n=== Simulation summary ===")
+    print(f"Sim time: {sim_time:.2f}s")
+    alive_small = sum(1 for a in world.agents if a.alive)
+    alive_large = sum(1 for la in world.large_agents if la.alive)
+    print(f"Alive: small={alive_small}/{len(world.agents)}, large={alive_large}/{len(world.large_agents)}")
+    print(f"Coverage: {world.coverage_percentage():.2f}%")
+    print(f"Victim rescued: {world.victim.rescued}")
+    
+    # Agent trajectories
+    for a in world.agents:
+        print(f"Agent {a.id} alive={a.alive} traj_len={len(a.hist)} last={a.pos}")
+    for la in world.large_agents:
+        print(f"LargeAgent {la.id} alive={la.alive} known_cells={np.sum(la.known_map != UNKNOWN)}")
+

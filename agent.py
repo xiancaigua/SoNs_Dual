@@ -18,7 +18,7 @@ class AgentBase:
         self.vel = (math.cos(angle)*10.0, math.sin(angle)*10.0)  # px/sec initial drift
         self.alive = True
         self.sensor_range = sensor_range
-        self.local_map = np.full((GRID_W, GRID_H), UNKNOWN, dtype=np.int8)
+        self.local_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
         self.has_goal = False
         self.goal = None  # waypoint in world coords
         self.comm_ok = True
@@ -66,8 +66,8 @@ class AgentBase:
                 gx, gy = pos_of_cell(i, j)
                 if math.hypot(gx - cx, gy - cy) <= r:
                     # sample world truth
-                    val = env.ground_grid[i, j]
-                    self.local_map[i, j] = val
+                    val = env.ground_grid[j, i]
+                    self.local_map[j, i] = val
 
     def get_local_explored_cells(self):
         """返回该agent已探索（非UNKNOWN）的格子集合（i,j）"""
@@ -169,9 +169,9 @@ class AgentBase:
         # 2. 绘制目标点标记（不同形状表示不同类型的目标）
         if self.is_large:
             # 大型机器人目标点：带圆圈的十字
-            pygame.draw.circle(screen, self.current_goal_color, (goal_x, goal_y), 8, 2)
-            pygame.draw.line(screen, self.current_goal_color, (goal_x-6, goal_y), (goal_x+6, goal_y), 2)
-            pygame.draw.line(screen, self.current_goal_color, (goal_x, goal_y-6), (goal_x, goal_y+6), 2)
+            pygame.draw.circle(screen, (100, 120, 10), (goal_x, goal_y), 8, 2)
+            pygame.draw.line(screen, (100, 120, 10), (goal_x-6, goal_y), (goal_x+6, goal_y), 2)
+            pygame.draw.line(screen, (100, 120, 10), (goal_x, goal_y-6), (goal_x, goal_y+6), 2)
         else:
             # 小型机器人目标点：实心三角形
             points = [
@@ -196,7 +196,8 @@ class LargeAgent(AgentBase):
     def __init__(self, id_, x, y, is_brain=False, behavior=None ,multi_behavior=None):
         super().__init__(id_, x, y, sensor_range=SENSOR_LARGE, is_large=True, behavior=behavior)
         self.last_reason_time = time.time()
-        self.known_map = np.full((GRID_W, GRID_H), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
+        self.known_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
+        # self.local_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
         self.assigned = {}  # agent_id -> waypoint
         self.is_brain = is_brain  # LargeAgent作为脑节点
         if multi_behavior is not None:
@@ -240,9 +241,21 @@ class LargeAgent(AgentBase):
         return assigns
 
     def draw_self(self, screen):
+        if self.is_brain:
+            color = (220, 100, 40)
+        else:
+            color = (200, 160, 60)
         # draw communication range
         x,y = int(self.pos[0]), int(self.pos[1])
-        pygame.draw.circle(screen, (200,160,60), (x,y), LARGE_RADIUS)
-        surf = pygame.Surface((AGENT_COMM_RANGE*2, AGENT_COMM_RANGE*2), pygame.SRCALPHA)
-        pygame.draw.circle(surf, (200,160,60,30), (AGENT_COMM_RANGE, AGENT_COMM_RANGE), AGENT_COMM_RANGE)
-        screen.blit(surf, (x-AGENT_COMM_RANGE, y-AGENT_COMM_RANGE))
+        if not self.alive:
+            pygame.draw.circle(screen, (90,90,90), (int(self.pos[0]), int(self.pos[1])), LARGE_RADIUS)
+            x,y = int(self.pos[0]), int(self.pos[1])
+            pygame.draw.line(screen, (160,160,160), (x-4,y-4),(x+4,y+4),2)
+            pygame.draw.line(screen, (160,160,160), (x-4,y+4),(x+4,y-4),2)
+        else:
+            pygame.draw.circle(screen, color, (x,y), LARGE_RADIUS)
+            surf = pygame.Surface((AGENT_COMM_RANGE*2, AGENT_COMM_RANGE*2), pygame.SRCALPHA)
+            pygame.draw.circle(surf, (200,160,60,30), (AGENT_COMM_RANGE, AGENT_COMM_RANGE), AGENT_COMM_RANGE)
+            screen.blit(surf, (x-AGENT_COMM_RANGE, y-AGENT_COMM_RANGE))
+
+

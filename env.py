@@ -2,10 +2,8 @@ import heapq
 import pygame
 import random
 import math
-import sys
-import time
+import copy
 import numpy as np
-from collections import deque, defaultdict
 
 from parameters import *
 from utils import *
@@ -62,11 +60,14 @@ class World:
         self.danger_zones = []
         self.agents = []
         self.large_agents = []
+        self.wasted_agents = []
+        self.wasted_large_agents = []
+        self.brain_id = None
         self.victim = None
         self.grid_visited_union = set()
 
         # 初始化地面栅格
-        self.ground_grid = np.full((GRID_W, GRID_H), FREE, dtype=np.int8)
+        self.ground_grid = np.full((GRID_H, GRID_W), FREE, dtype=np.int8)
 
         # 环境生成顺序
         self.generate_static_obstacles(NUM_OBSTACLES)
@@ -116,7 +117,7 @@ class World:
             bottom = int((y + h) // GRID_CELL)
             for i in range(left, min(GRID_W, right + 1)):
                 for j in range(top, min(GRID_H, bottom + 1)):
-                    self.ground_grid[i, j] = OBSTACLE
+                    self.ground_grid[j, i] = OBSTACLE
 
     def generate_danger_zones(self, num=NUM_DANGER_ZONES, max_attempts=200):
         # no overlap with obstacles or existing danger zones
@@ -149,7 +150,7 @@ class World:
                         for j in range(top, bottom + 1):
                             gx, gy = pos_of_cell(i, j)
                             if math.hypot(gx - x, gy - y) <= r:
-                                self.ground_grid[i, j] = DANGER
+                                self.ground_grid[j, i] = DANGER
                     break
                 attempts += 1
 
@@ -185,17 +186,19 @@ class World:
 
                 if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
                     self.large_agents.append(LargeAgent(i, x, y,\
-                                                        multi_behavior=ERRTFrontierAssignmentBehavior()))
+                                                        multi_behavior=ERRTFrontierAssignmentBehavior(),
+                                                        behavior=PathPlanningBehavior()))
                     break
             else:
                 # 如果找不到合适位置，则直接使用base_pos附近
                 self.large_agents.append(LargeAgent(i, base_pos[0] + random.uniform(-10, 10),
                                                     base_pos[1] + random.uniform(-10, 10),
-                                                    multi_behavior=ERRTFrontierAssignmentBehavior()))
+                                                    multi_behavior=ERRTFrontierAssignmentBehavior(),
+                                                    behavior=PathPlanningBehavior()))
         if self.large_agents:
             brain_node = min(self.large_agents, key=lambda a: a.id)
             brain_node.is_brain = True
-
+            self.brain_id = brain_node.id
 
     def spawn_agents(self, num=5):
         # free space
@@ -239,7 +242,7 @@ class World:
             cell = cell_of_pos((x, y))
 
             # 检查是否在自由空间中
-            if self.ground_grid[cell[0], cell[1]] != FREE:
+            if self.ground_grid[cell[1], cell[0]] != FREE:
                 continue
 
             for bc in brain_cells:
@@ -258,7 +261,7 @@ class World:
 
     def astar(self, grid, start, goal):
         """基于栅格地图的A*"""
-        w, h = len(grid), len(grid[0])
+        w, h = grid.shape[1], grid.shape[0]
         open_set = [(0, start)]
         came_from = {}
         gscore = {start: 0}
@@ -270,7 +273,7 @@ class World:
                 return True  # 存在路径即可
             for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
                 nx, ny = current[0] + dx, current[1] + dy
-                if 0 <= nx < w and 0 <= ny < h and grid[nx][ny] == FREE:
+                if 0 <= nx < w and 0 <= ny < h and grid[ny][nx] == FREE:
                     ng = gscore[current] + 1
                     if (nx, ny) not in gscore or ng < gscore[(nx, ny)]:
                         came_from[(nx, ny)] = current
@@ -285,28 +288,70 @@ class World:
 
         victim_pos = self.victim.pos
         victim_cell = cell_of_pos(victim_pos)
-        if self.large_agents[0].known_map[victim_cell[0], victim_cell[1]] != UNKNOWN:
+        if self.brain_id is not None \
+            and self.large_agents[self.brain_id].known_map[victim_cell[1], victim_cell[0]] != UNKNOWN:
             self.victim.rescued = True
 
-        # 1) 更新每个代理的感知信息 -> 更新 local_map
-        for a in self.agents + self.large_agents:
-            if not a.alive:
-                continue
-            try:
-                a.update_local_map_from_sensing(self)
-            except Exception as e:
-                print(f"Error updating local map for agent {a.id}: {e}")
+        # 1) 检查哪些节点还活着，选举脑节点
+        dead_agents = [a for a in self.agents if not a.alive]
+        self.wasted_agents.extend(dead_agents)
+        self.agents = [a for a in self.agents if a.alive]
 
-        # 2) deliver communications queued
-        # TODO: multi-step communication process
+        dead_large = [la for la in self.large_agents if not la.alive and not la.is_brain]
+        self.wasted_large_agents.extend(dead_large)
+        alive_large_agents = [la for la in self.large_agents if la.alive]
+        
+        if self.brain_id is None or not self.large_agents[self.brain_id].alive:
+            if alive_large_agents:
+                # 选举成功
+                brain_node = min(alive_large_agents, key=lambda a: a.id)
+                id_in_list = alive_large_agents.index(brain_node)
+                
+                # 信息交接
+                brain_node.is_brain = True
+                brain_node.last_reason_time = self.large_agents[self.brain_id].last_reason_time
+                brain_node.known_map = np.copy(self.large_agents[self.brain_id].known_map)
+                brain_node.son_ids = list(getattr(self.large_agents[self.brain_id], "son_ids", []))
+                brain_node.father_id = None
+                brain_node.assigned = copy.deepcopy(self.large_agents[self.brain_id].assigned)
+
+                # 确认原来脑节点去逝
+                self.wasted_large_agents.append(self.large_agents[self.brain_id])
+                self.large_agents = alive_large_agents
+                self.large_agents[id_in_list] = brain_node
+                
+                # 最终交接
+                self.brain_id = self.large_agents.index(brain_node)
+            else:
+                self.large_agents = []
+                self.brain_id = None
+                return  # 没有活着的大节点，跳过本轮更新
+        else:
+            self.large_agents = alive_large_agents
+        if len(self.large_agents) == 0 or len(self.agents) == 0:
+            return  # 没有节点，跳过本轮更新
+        
+
+        # 2) 更新每个代理的感知信息 -> 更新 local_map
+        for a in self.agents + self.large_agents:
+            # try:
+            a.update_local_map_from_sensing(self)
+            # except Exception as e:
+            #     print(f"Error updating local map for agent {a.id}: {e}")
+
+        # 3) periodic communications: small agents send map patches to large agents if within range
+        for a in self.agents + self.large_agents:
+            if getattr(a, 'is_brain', False):
+                continue
+            # try:
+            # for la in self.large_agents:
+                # if distance(a.pos, la.pos) <= AGENT_COMM_RANGE:
+                    # a.send_map_patch(comms, [la], now_time)
+            a.send_map_patch(comms, [self.large_agents[self.brain_id]], now_time)
+            # except Exception as e:
+            #     print(f"Error in periodic communication for agent {a.id}: {e}")
+        # 4) deliver communications queued
         # 多机器人系统之间的层级化的结构与信息互通
-        """
-        1. 脑节点给大节点分配任务组
-        2. 大节点给小节点分配逐个任务
-        3. 小节点发送地图补丁给大节点
-        4. 大节点给脑节点发消息补全信息
-        5. 小节点发现victim后发送救援警报给大节点和脑节点
-        """
         deliveries = comms.deliver(now_time)
         for sender, receiver, msg in deliveries:
             # msg dispatch
@@ -320,76 +365,173 @@ class World:
                     receiver.has_goal = True
                     receiver.goal = msg['pos']
 
-        # 3) Large agents perform reasoning (System 2)
+        # 5) Large agents perform reasoning (System 2)
         for la in self.large_agents:
-            if not la.alive:
+            if not la.is_brain:
                 continue
-            try:
+            # try:
                 # 限制推理频率
-                if now_time - la.last_reason_time >= BRAIN_REASON_INTERVAL:
-                    assigns = la.reason_and_assign(self.agents, now_time)
-                    la.last_reason_time = now_time
-                    for aid, wp in assigns.items():
-                        agent = next((a for a in self.agents if a.id == aid), None)
-                        if agent is not None:
-                            agent.has_goal = True
-                            agent.goal = wp
-
-            except Exception as e:
-                print(f"Error in reasoning or task assignment for large agent {la.id}: {e}")
+            if now_time - la.last_reason_time >= BRAIN_REASON_INTERVAL:
+                assigns = la.reason_and_assign((self.agents + self.large_agents), now_time)
+                la.last_reason_time = now_time
+                for aid, wp in assigns.items():
+                    agent = next((a for a in self.agents if a.id == aid), None)
+                    if agent is not None:
+                        agent.has_goal = True
+                        agent.goal = wp
+                    Largeagent = next((a for a in self.large_agents if a.id == aid), None)
+                    if Largeagent is not None:
+                        Largeagent.has_goal = True
+                        Largeagent.goal = wp
+                break
+            # except Exception as e:
+            #     print(f"Error in reasoning or task assignment for large agent {la.id}: {e}")
 
         # 4) Agents decide & move
         for a in self.agents:
-            if not a.alive:
-                continue
-            try:
-                sense = a.sense(self)
-                desired_vx, desired_vy = a.behavior.decide(a, sense, dt)
-                # 限制速度范围
-                speed = math.hypot(desired_vx, desired_vy)
-                if speed > AGENT_MAX_SPEED:
-                    scale = AGENT_MAX_SPEED / (speed + 1e-9)
-                    desired_vx *= scale
-                    desired_vy *= scale
-                a.step_motion(desired_vx, desired_vy, dt, self)
+            # try:
+            sense = a.sense(self)
+            desired_vx, desired_vy = a.behavior.decide(a, sense, dt)
+            # 限制速度范围
+            speed = math.hypot(desired_vx, desired_vy)
+            if speed > AGENT_MAX_SPEED:
+                scale = AGENT_MAX_SPEED / (speed + 1e-9)
+                desired_vx *= scale
+                desired_vy *= scale
+            a.step_motion(desired_vx, desired_vy, dt, self)
 
-                # 更新已访问的网格单元
-                ci, cj = cell_of_pos(a.pos)
-                self.grid_visited_union.add((ci, cj))
-            except Exception as e:
-                print(f"Error in decision or motion for agent {a.id}: {e}")
+            # 更新已访问的网格单元
+            ci, cj = cell_of_pos(a.pos)
+            self.grid_visited_union.add((ci, cj))
+            # except Exception as e:
+            #     print(f"Error in decision or motion for agent {a.id}: {e}")
         for la in self.large_agents:
-            if not la.alive:
-                continue
-            try:
-                sense = la.sense(self)
-                desired_vx, desired_vy = la.behavior.decide(a, sense, dt)
-                # 限制速度范围
-                speed = math.hypot(desired_vx, desired_vy)
-                if speed > AGENT_MAX_SPEED:
-                    scale = AGENT_MAX_SPEED / (speed + 1e-9)
-                    desired_vx *= scale
-                    desired_vy *= scale
-                la.step_motion(desired_vx, desired_vy, dt, self)
+            # try:
+            sense = la.sense(self)
+            desired_vx, desired_vy = la.behavior.decide(la, sense, dt)
+            # 限制速度范围
+            speed = math.hypot(desired_vx, desired_vy)
+            if speed > AGENT_MAX_SPEED:
+                scale = AGENT_MAX_SPEED / (speed + 1e-9)
+                desired_vx *= scale
+                desired_vy *= scale
+            la.step_motion(desired_vx, desired_vy, dt, self)
 
-                # 更新已访问的网格单元
-                ci, cj = cell_of_pos(la.pos)
-                self.grid_visited_union.add((ci, cj))
-            except Exception as e:
-                print(f"Error in decision or motion for large agent {la.id}: {e}")
+            # 更新已访问的网格单元
+            ci, cj = cell_of_pos(la.pos)
+            self.grid_visited_union.add((ci, cj))
+            # except Exception as e:
+            #     print(f"Error in decision or motion for large agent {la.id}: {e}")
 
-        # 5) periodic communications: small agents send map patches to large agents if within range
-        for a in self.agents:
-            if not a.alive:
+    def draw(self, screen):
+        # draw explored overlay: union of all agents' explored cells => white, else dark gray
+        explored_union = np.full((GRID_H, GRID_W), False, dtype=bool)
+        for a in (self.agents + self.large_agents + self.wasted_agents + self.wasted_large_agents):
+            explored = (a.local_map != UNKNOWN)
+            explored_union = np.logical_or(explored_union, explored)
+        
+        # explored_union = self.large_agents[self.brain_id].known_map.copy()
+
+        # draw cells
+        for i in range(GRID_W):
+            for j in range(GRID_H):
+                rect = pygame.Rect(i*GRID_CELL, j*GRID_CELL, GRID_CELL, GRID_CELL)
+                if not explored_union[j,i]:
+                    color = (60,60,60)  # unknown gray
+                else:
+                    color = (245,245,245)  # explored white
+                pygame.draw.rect(screen, color, rect)
+
+        # draw obstacles (on top)
+        for obs in self.obstacles:
+            obs.draw(screen)
+        # draw danger zones
+        for dz in self.danger_zones:
+            dz.draw(screen)
+        # draw victim
+        if self.victim:
+            self.victim.draw(screen)
+        # draw agents' traces and bodies
+        for la in self.large_agents + self.wasted_large_agents:
+            la.draw_hist(screen, color=(200,160,60))
+            la.draw_self(screen)
+            la.draw_goal(screen)
+        for a in self.agents + self.wasted_agents:
+            a.draw_hist(screen)
+            a.draw_self(screen)
+            a.draw_goal(screen)
+        if self.brain_id is not None:
+            self.draw_brain_and_agent_views(screen,[2, 1002])
+
+
+    def draw_brain_and_agent_views(self, screen, agents_to_show_id=None):
+        """在右侧绘制脑节点 known_map + 指定 agent 的 local_map"""
+        sidebar_x = SCREEN_W  # 右侧起始位置
+        sidebar_w = 400
+        sidebar_h = SCREEN_H
+        pygame.draw.rect(screen, (30, 30, 30), (sidebar_x, 0, sidebar_w, sidebar_h))
+
+        # ========= 找到脑节点 =========
+        brain = self.large_agents[self.brain_id] if self.brain_id is not None else None
+        if brain:
+            self._draw_map_on_sidebar(screen, brain.known_map, sidebar_x, 20, title="Brain Known Map")
+
+        # ========= 绘制指定 agent 视图 =========
+        for i in agents_to_show_id or []:
+            if i == self.brain_id:
                 continue
-            try:
-                for la in self.large_agents:
-                    if not la.alive:
-                        continue
-                    if distance(a.pos, la.pos) <= AGENT_COMM_RANGE:
-                        a.send_map_patch(comms, [la], now_time)
-            except Exception as e:
-                print(f"Error in periodic communication for agent {a.id}: {e}")
+            agent_to_show_id = i
+            if agent_to_show_id is not None:
+                target_agent = next((a for a in (self.agents + self.large_agents + 
+                                                self.wasted_large_agents + self.wasted_agents) \
+                                    if a.id == agent_to_show_id), None)
+                if target_agent is not None:
+                    self._draw_map_on_sidebar(screen, target_agent.local_map, \
+                                              sidebar_x, (250 + 230*agents_to_show_id.index(i)), title=f"Agent {agent_to_show_id} Local Map")
+
+    def _draw_map_on_sidebar(self, screen, grid_map, x_offset, y_offset, title="Map"):
+        """通用绘制函数，用于绘制地图数组"""
+        if grid_map is None:
+            return
+
+        h, w = grid_map.shape
+
+        # 定义颜色表
+        color_map = {
+            UNKNOWN: (40, 40, 40),
+            FREE: (230, 230, 230),
+            OBSTACLE: (100, 100, 100),
+            DANGER: (255, 60, 60),
+            VICTIM: (255, 255, 0)
+        }
+
+        surf = pygame.Surface((w, h))
+        for y in range(h):
+            for x in range(w):
+                val = grid_map[y, x]
+                surf.set_at((x, y), color_map.get(val, (255, 255, 255)))
+
+        # 缩放与绘制
+        scaled = pygame.transform.scale(surf, (360, 200))
+        screen.blit(scaled, (x_offset + 20, y_offset))
+
+        # 边框 + 标题
+        pygame.draw.rect(screen, (255, 255, 255), (x_offset + 20, y_offset, 360, 200), 2)
+        font = pygame.font.SysFont(None, 22)
+        text = font.render(title, True, (255, 255, 255))
+        screen.blit(text, (x_offset + 30, y_offset - 20))
+
+
+    def coverage_percentage(self):
+        total = GRID_W * GRID_H
+        # count union of explored cells
+        explored = 0
+        union_set = set()
+        for a in (self.agents + self.large_agents):
+            union_set |= a.get_local_explored_cells()
+        explored = len(union_set)
+        return (explored / total) * 100.0
+
 
     def update_data_collect(self, dt, comms:Communication, now_time):
         self.time += dt
@@ -582,48 +724,3 @@ class World:
                 print(f"Error in periodic communication for agent {a.id}: {e}")
 
 
-    def draw(self, screen):
-        # draw explored overlay: union of all agents' explored cells => white, else dark gray
-        explored_union = np.full((GRID_W, GRID_H), False, dtype=bool)
-        for a in (self.agents + self.large_agents):
-            explored = (a.local_map != UNKNOWN)
-            explored_union = np.logical_or(explored_union, explored)
-
-        # draw cells
-        for i in range(GRID_W):
-            for j in range(GRID_H):
-                rect = pygame.Rect(i*GRID_CELL, j*GRID_CELL, GRID_CELL, GRID_CELL)
-                if not explored_union[i,j]:
-                    color = (60,60,60)  # unknown gray
-                else:
-                    color = (245,245,245)  # explored white
-                pygame.draw.rect(screen, color, rect)
-
-        # draw obstacles (on top)
-        for obs in self.obstacles:
-            obs.draw(screen)
-        # draw danger zones
-        for dz in self.danger_zones:
-            dz.draw(screen)
-        # draw victim
-        if self.victim:
-            self.victim.draw(screen)
-        # draw agents' traces and bodies
-        for la in self.large_agents:
-            la.draw_hist(screen, color=(200,160,60))
-            la.draw_self(screen)
-            la.draw_goal(screen)
-        for a in self.agents:
-            a.draw_hist(screen)
-            a.draw_self(screen)
-            a.draw_goal(screen)
-
-    def coverage_percentage(self):
-        total = GRID_W * GRID_H
-        # count union of explored cells
-        explored = 0
-        union_set = set()
-        for a in (self.agents + self.large_agents):
-            union_set |= a.get_local_explored_cells()
-        explored = len(union_set)
-        return (explored / total) * 100.0
