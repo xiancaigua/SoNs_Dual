@@ -1083,6 +1083,7 @@ class World:
 # -----------------------------
 def main():
     global SEED
+    clock = pygame.time.Clock()
     if SEED is not None:
         random.seed(SEED)
         np.random.seed(SEED)
@@ -1090,7 +1091,6 @@ def main():
         pygame.init()
         screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
         pygame.display.set_caption("exploration simulation")
-        clock = pygame.time.Clock()
         font = load_font()
 
     # communication system
@@ -1120,13 +1120,13 @@ def main():
         if not paused:
             world.update(dt, comms, now_time)
 
+        coverage = world.coverage_percentage()
         # 绘制（仅在可视化模式下启用）
         if VISUALIZE:
             world.draw(screen)
 
             # HUD
             alive = sum(1 for a in world.agents if a.alive) + sum(1 for la in world.large_agents if la.alive)
-            coverage = world.coverage_percentage()
             hud1 = f"Time: {sim_time:.1f}s  Alive agents: {alive}/{len(world.agents)+len(world.large_agents)}  Coverage: {coverage:.2f}%"
             hud2 = f"Obstacles: {len(world.obstacles)}  Dangers: {len(world.danger_zones)}  Victim: {'rescued' if world.victim.rescued else 'missing'}"
             screen.blit(font.render(hud1, True, (10, 10, 10)), (8, 6))
