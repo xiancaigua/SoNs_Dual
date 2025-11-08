@@ -214,6 +214,31 @@ class FollowBehavior(Behavior):
         else:
             return 0.0, 0.0
 
+class FrontierBasedBehavior(Behavior):
+    def decide(self, agent, sense_data, dt):
+        map = agent.known_map if agent.is_large else agent.local_map
+        frontiers = self.find_frontiers(map)
+        if not frontiers:
+            return 0.0, 0.0
+        representatives = self.select_frontier_representatives(frontiers)
+        target = self.choose_best_frontier(agent, representatives)
+        desired_vx, desired_vy = self.get_desired_velocity(agent, target)
+        return desired_vx, desired_vy
+    
+    def find_frontiers(self, map):
+        pass
+
+    def select_frontier_representatives(self, frontiers):
+        pass
+
+    def choose_best_frontier(self, agent, representatives):
+        pass
+
+    def get_desired_velocity(self, agent, target):
+        return 0.0, 0.0
+
+    def distance(self, a, b):
+        pass
 
 # -----------------------------
 # Agent（小节点）类
@@ -234,7 +259,7 @@ class AgentBase:
         self.hist = [self.pos]
         self.is_large = is_large  # LargeAgent flag
         # default behavior
-        self.behavior = ReactiveBehavior() if not is_large else ExploreBehavior()
+        self.behavior = FrontierBasedBehavior()
 
     # 环境感知：返回用于行为决策的局部信息（近障碍、危险区、victim）
     def sense(self, env):
@@ -381,7 +406,7 @@ class AgentBase:
 class LargeAgent(AgentBase):
     def __init__(self, id_, x, y):
         super().__init__(id_, x, y, sensor_range=SENSOR_LARGE, is_large=True)
-        self.behavior = ExploreBehavior()
+        self.behavior = FrontierBasedBehavior()
         self.last_reason_time = time.time()
         self.known_map = np.full((GRID_W, GRID_H), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
         self.assigned = {}  # agent_id -> waypoint
