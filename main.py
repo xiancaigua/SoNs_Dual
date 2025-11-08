@@ -17,8 +17,13 @@ import random
 import math
 import sys
 import time
+import elkai
+import tempfile
+import os
 import numpy as np
+import networkx as nx
 from collections import deque, defaultdict
+from sklearn.cluster import KMeans
 
 from parameters import *
 
@@ -215,30 +220,219 @@ class FollowBehavior(Behavior):
             return 0.0, 0.0
 
 class FrontierBasedBehavior(Behavior):
+    def __init__(self):
+        super().__init__()
+        self.distance_dic = {}  # for pathfinding
+        self.map = np.full((GRID_W, GRID_H), UNKNOWN, dtype=np.int8)
+        self.senser_range = SENSOR_SMALL//GRID_CELL  # default, overridden for small agents
+        self.delta_time = 0.0
+        self.path = None  # current planned path
+        self.victim = None  # victim location if known
+        self.search_speed = 7.0  # pixels per second
+        self.rescue_speed = 25.0  # pixels per second
+        self.thinking = True
+
     def decide(self, agent, sense_data, dt):
-        map = agent.known_map if agent.is_large else agent.local_map
-        frontiers = self.find_frontiers(map)
+        self.delta_time += dt
+        print(dt, self.delta_time)
+        if (self.delta_time < 10 and self.path is not None) or self.victim is not None:
+            # continue toward last target
+            self.thinking = False
+            desired_vx, desired_vy = self.get_desired_velocity(agent)
+            return desired_vx, desired_vy
+        self.thinking = True
+        self.delta_time = 0.0
+        self.map = agent.known_map if agent.is_large else agent.local_map
+        self.senser_range = agent.sensor_range // GRID_CELL
+        frontiers = self.find_frontiers()
         if not frontiers:
             return 0.0, 0.0
-        representatives = self.select_frontier_representatives(frontiers)
+        if self.victim is not None:
+            frontiers = [self.victim]
+            self.path = self.get_desired_path(agent, self.victim)
+        
+            desired_vx, desired_vy = self.get_desired_velocity(agent)
+            return desired_vx, desired_vy
+        
+        representatives = self.select_frontier_representatives(agent, frontiers)
+        if not representatives:
+            return 0.0, 0.0
+        
+        distance_dic = self.build_distance_dic(representatives)
+        if not distance_dic:
+            return 0.0, 0.0
+        
         target = self.choose_best_frontier(agent, representatives)
-        desired_vx, desired_vy = self.get_desired_velocity(agent, target)
+        if target is None:
+            return 0.0, 0.0
+        
+        self.path = self.get_desired_path(agent, target)
+        
+        desired_vx, desired_vy = self.get_desired_velocity(agent)
         return desired_vx, desired_vy
-    
-    def find_frontiers(self, map):
-        pass
 
-    def select_frontier_representatives(self, frontiers):
-        pass
+    def find_frontiers(self):
+        frontiers = []
+        for i in range(0, GRID_W-1):
+            for j in range(0, GRID_H-1):
+                if self.map[i,j] == VICTIM:
+                    self.victim = (i,j)
+                    return [(i,j)]
+                if self.map[i,j] == FREE:
+                    # check neighbors for UNKNOWN
+                    is_frontier = False
+                    for di in (-1,0,1):
+                        for dj in (-1,0,1):
+                            if di==0 and dj==0: continue
+                            ni, nj = i+di, j+dj
+                            if 0<=ni<GRID_W and 0<=nj<GRID_H:
+                                if self.map[ni,nj] == UNKNOWN:
+                                    is_frontier = True
+                                    break
+                        if is_frontier: break
+                    if is_frontier:
+                        frontiers.append((i,j))
+        return frontiers
+
+    def select_frontier_representatives(self, agent, frontiers):
+        num_representatives = 1 + len(frontiers) // self.senser_range
+        if num_representatives == 1:
+            return frontiers
+        # KMeans clustering
+        kmeans = KMeans(n_clusters=num_representatives, random_state=0)
+        labels = kmeans.fit_predict(frontiers)
+        cluster_centers = kmeans.cluster_centers_.astype(int)
+        reps = cluster_centers.tolist()
+        representatives = []
+        for rep in reps:
+            representatives.append(self.valid_position((rep[0], rep[1])))
+        return representatives
 
     def choose_best_frontier(self, agent, representatives):
-        pass
+        matrix_len = len(representatives)+2
+        dist_matrix = np.full((matrix_len, matrix_len), 1000)
+        for i, rep_i in enumerate(representatives):
+            for j, rep_j in enumerate(representatives):
+                if rep_i == rep_j:
+                    continue
+                dist = self.distance_dic[rep_i].get(rep_j, 1000)
+                dist_matrix[i+1, j+1] = dist
+                dist_matrix[j+1, i+1] = dist
+            dist_matrix[i+1, 0] = self.distance_dic[rep_i].get(self.valid_position(cell_of_pos(agent.pos)), 1000)
+            dist_matrix[0, i+1] = dist_matrix[i+1, 0]
+            dist_matrix[i+1, matrix_len-1] = 1000
+            dist_matrix[matrix_len-1, i+1] = 1000
+        dist_matrix[0, matrix_len-1] = 0
+        dist_matrix[matrix_len-1, 0] = 0
 
-    def get_desired_velocity(self, agent, target):
-        return 0.0, 0.0
+        tour = self.solve_tsp_with_elkai(matrix_len, dist_matrix)
 
-    def distance(self, a, b):
-        pass
+        if tour is None:
+            return representatives[0]
+
+        if len(tour) > 1:
+            next_index = tour[1]
+            if 0 <= next_index < matrix_len-1:
+                best = representatives[next_index-1]
+                return best
+            elif next_index == matrix_len-1:
+                next_index = tour[matrix_len-1]
+                best = representatives[next_index-1]
+                return best
+        return representatives[0]
+
+    def solve_tsp_with_elkai(self, n, dist_matrix):
+        int_dist_matrix = ((dist_matrix).astype(int)).tolist()
+        try:
+            tour = elkai.solve_int_matrix(int_dist_matrix)
+            return tour
+        except Exception as e:
+            print(f"Elkai TSP 求解失败: {e}")
+            return None
+        
+    def get_desired_path(self, agent, target):
+        now_pos = cell_of_pos(agent.pos)
+        now_x, now_y = now_pos
+        tx, ty = target
+
+        """基于栅格地图的A*"""
+        open_set = [(0, now_pos)]
+        came_from = {}
+        gscore = {now_pos: 0}
+        fscore = {now_pos: abs(now_x-tx) + abs(now_y-ty)}
+
+        while open_set:
+            _, current = heapq.heappop(open_set)
+            cx, cy = current
+            if current == target:
+                path = []
+                while current in came_from:
+                    path.append(current)
+                    current = came_from[current]
+                path.append(now_pos)
+                path.reverse()
+                return path
+            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < GRID_W and 0 <= ny < GRID_H and (self.map[nx, ny] == FREE or self.map[nx, ny] == VICTIM):
+                    ng = gscore[current] + 1
+                    if (nx, ny) not in gscore or ng < gscore[(nx, ny)]:
+                        came_from[(nx, ny)] = current
+                        gscore[(nx, ny)] = ng
+                        fscore[(nx, ny)] = ng + abs(nx - tx) + abs(ny - ty)
+                        heapq.heappush(open_set, (fscore[(nx, ny)], (nx, ny)))
+        return None
+
+    def get_desired_velocity(self, agent):
+        speed = self.rescue_speed if self.victim is not None else self.search_speed
+        if self.thinking:
+            speed = 0.0
+        now_cell = cell_of_pos(agent.pos)
+        now_x, now_y = now_cell
+        if self.path is None or len(self.path) == 0 or now_cell not in self.path:
+            return 0.0, 0.0
+        # follow path
+        next_index = self.path.index(now_cell) + 1
+        if next_index >= len(self.path):
+            self.path = None
+            return 0.0, 0.0
+        next_x, next_y = self.path[next_index]
+        speed_x = (next_x - now_x)*speed
+        speed_y = (next_y - now_y)*speed
+        return speed_x, speed_y
+
+    def build_distance_dic(self, representatives):
+        G = nx.Graph()
+        for i in range(GRID_W):
+            for j in range(GRID_H):
+                if self.map[i,j] == FREE or self.map[i,j] == VICTIM:
+                    G.add_node((i,j))
+        for i in range(GRID_W):
+            for j in range(GRID_H):
+                if self.map[i,j] == FREE or self.map[i,j] == VICTIM:
+                    for di, dj in [(-1,0),(1,0),(0,-1),(0,1)]:
+                        ni, nj = i+di, j+dj
+                        if 0<=ni<GRID_W and 0<=nj<GRID_H and (self.map[ni,nj] == FREE or self.map[ni,nj] == VICTIM):
+                            G.add_edge((i,j), (ni,nj), weight=1)
+
+        self.distance_dic = {}
+        for rep in representatives:
+            distances = nx.single_source_dijkstra_path_length(G, rep)
+            self.distance_dic[rep] = distances
+        return self.distance_dic
+    
+    def valid_position(self, cell):
+        i, j = cell
+        if 0 <= i < GRID_W and 0 <= j < GRID_H and (self.map[i,j] == FREE or self.map[i,j] == VICTIM):
+            return cell
+        for r in range(1,10):
+            for di in (-r,0,r):
+                for dj in (-r,0,r):
+                    if di==0 and dj==0: 
+                        continue
+                    ni, nj = i+di, j+dj
+                    if 0<=ni<GRID_W and 0<=nj<GRID_H and (self.map[ni,nj] == FREE or self.map[ni,nj] == VICTIM):
+                        return (ni, nj)
 
 # -----------------------------
 # Agent（小节点）类
