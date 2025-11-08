@@ -272,6 +272,25 @@ class AgentBase:
                     # sample world truth
                     val = env.ground_grid[i, j]
                     self.local_map[i, j] = val
+    
+    def integrate_map_patch(self, patch):
+        """将收到的patch应用到自己的local_map"""
+        for (i,j,val) in patch:
+            # val is occupancy code
+            if 0 <= i < GRID_W and 0 <= j < GRID_H:
+                # overwrite unknowns or keep obstacle/danger priority
+                if self.local_map[i,j] == UNKNOWN and val != UNKNOWN:
+                    self.local_map[i,j] = val
+                else:
+                    # 若已有UNKNOWN则覆盖，否则保持原先（或根据优先级更新）
+                    # 优先级： DANGER/OBSTACLE > VICTIM > FREE
+                    cur = self.local_map[i,j]
+                    if val == DANGER or val == OBSTACLE:
+                        self.local_map[i,j] = val
+                    elif val == VICTIM:
+                        self.local_map[i,j] = val
+                    elif cur == UNKNOWN:
+                        self.local_map[i,j] = val
 
     def get_local_explored_cells(self):
         """返回该agent已探索（非UNKNOWN）的格子集合（i,j）"""
@@ -388,6 +407,27 @@ class LargeAgent(AgentBase):
                         self.known_map[i,j] = val
                     elif cur == UNKNOWN:
                         self.known_map[i,j] = val
+    
+    def get_local_explored_cells(self):
+        """返回该agent已探索（非UNKNOWN）的格子集合（i,j）"""
+        inds = np.where(self.known_map != UNKNOWN)
+        return set(zip(inds[0].tolist(), inds[1].tolist()))
+    
+    def send_map_patch(self, comms, targets, now_time, radius=None):
+        """向 targets 发送本地地图的补丁（稀疏表示）"""
+        # pack as list of (i,j,val) for explored cells near agent to limit bandwidth
+        explored = self.get_local_explored_cells()
+        patch = []
+        # limit patch to cells within a radius (in cells)
+        if radius is None:
+            radius = int(self.sensor_range // GRID_CELL) + 2
+        ci, cj = cell_of_pos(self.pos)
+        for (i,j) in list(explored):
+            if abs(i-ci) <= radius and abs(j-cj) <= radius:
+                patch.append((i,j,int(self.local_map[i,j])))
+        msg = {'type':'map_patch', 'from':self.id, 'patch':patch, 'pos':self.pos}
+        for t in targets:
+            comms.send(self, t, msg, now_time)
 
     def fuse_own_sensing(self):
         """将自己感知到的地图写入 known_map"""
@@ -699,6 +739,8 @@ class World:
                 continue
             try:
                 a.update_local_map_from_sensing(self)
+                if a.is_large:
+                    a.fuse_own_sensing()
             except Exception as e:
                 print(f"Error updating local map for agent {a.id}: {e}")
 
@@ -716,8 +758,7 @@ class World:
             # msg dispatch
             if msg.get('type') == 'map_patch':
                 # receiver should integrate patch
-                if isinstance(receiver, LargeAgent):
-                    receiver.integrate_map_patch(msg['patch'])
+                receiver.integrate_map_patch(msg['patch'])
             elif msg.get('type') == 'rescue_alert':
                 # receiver may prioritize moving to victim
                 if isinstance(receiver, AgentBase):
@@ -725,21 +766,21 @@ class World:
                     receiver.goal = msg['pos']
 
         # 3) Large agents perform reasoning (System 2)
-        for la in self.large_agents:
-            if not la.alive:
-                continue
-            try:
-                # 限制推理频率
-                if now_time - la.last_reason_time >= BRAIN_REASON_INTERVAL:
-                    la.reason_and_assign(self.agents, now_time)
-                    la.last_reason_time = now_time
+        # for la in self.large_agents:
+        #     if not la.alive:
+        #         continue
+        #     try:
+        #         # 限制推理频率
+        #         if now_time - la.last_reason_time >= BRAIN_REASON_INTERVAL:
+        #             la.reason_and_assign(self.agents, now_time)
+        #             la.last_reason_time = now_time
 
-                # 主动请求附近小节点的地图补丁
-                for a in self.agents:
-                    if a.alive and distance(la.pos, a.pos) <= AGENT_COMM_RANGE:
-                        la.request_map_patch(comms, a, now_time)
-            except Exception as e:
-                print(f"Error in reasoning or task assignment for large agent {la.id}: {e}")
+        #         # 主动请求附近小节点的地图补丁
+        #         for a in self.agents:
+        #             if a.alive and distance(la.pos, a.pos) <= AGENT_COMM_RANGE:
+        #                 la.request_map_patch(comms, a, now_time)
+        #     except Exception as e:
+        #         print(f"Error in reasoning or task assignment for large agent {la.id}: {e}")
 
         # 4) Agents decide & move
         for a in self.agents + self.large_agents:
@@ -763,15 +804,15 @@ class World:
                 print(f"Error in decision or motion for agent {a.id}: {e}")
 
         # 5) periodic communications: small agents send map patches to large agents if within range
-        for a in self.agents:
+        for a in self.agents + self.large_agents:
             if not a.alive:
                 continue
             try:
-                for la in self.large_agents:
-                    if not la.alive:
+                for aa in self.agents + self.large_agents:
+                    if not aa.alive or aa.id == a.id:
                         continue
-                    if distance(a.pos, la.pos) <= AGENT_COMM_RANGE:
-                        a.send_map_patch(comms, [la], now_time)
+                    if distance(a.pos, aa.pos) <= AGENT_COMM_RANGE:
+                        a.send_map_patch(comms, [aa], now_time)
             except Exception as e:
                 print(f"Error in periodic communication for agent {a.id}: {e}")
 
