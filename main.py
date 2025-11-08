@@ -367,6 +367,9 @@ class LargeAgent(AgentBase):
         self.known_map = np.full((GRID_W, GRID_H), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
         self.assigned = {}  # agent_id -> waypoint
 
+    def request_map_patch(self, comms, agent, now_time):
+        pass
+
     def integrate_map_patch(self, patch):
         """将收到的patch应用到自己的known_map"""
         for (i,j,val) in patch:
@@ -662,6 +665,7 @@ class World:
             best_point = self.random_free_pos()
 
         self.victim = Victim(best_point[0], best_point[1])
+        self.ground_grid[best_point[0]//GRID_CELL, best_point[1]//GRID_CELL] = VICTIM
         return self.victim
 
     def astar(self, grid, start, goal):
