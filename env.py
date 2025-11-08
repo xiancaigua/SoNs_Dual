@@ -50,7 +50,7 @@ class Victim:
 # 环境（World）类
 # -----------------------------
 class World:
-    def __init__(self, seed=None):
+    def __init__(self, seed=None, world_id = -1):
         if seed is not None:
             random.seed(seed)
         self.width = WORLD_W
@@ -69,12 +69,17 @@ class World:
         # 初始化地面栅格
         self.ground_grid = np.full((GRID_H, GRID_W), FREE, dtype=np.int8)
 
-        # 环境生成顺序
-        self.generate_static_obstacles(NUM_OBSTACLES)
-        self.generate_danger_zones(NUM_DANGER_ZONES)
-        self.spawn_large_agents(NUM_LARGE)
-        self.spawn_agents(NUM_AGENTS)
-        self.place_victim()   # victim放在最后，以确保存在brain node
+        if world_id >= 0:
+            self.generate_fixed_map(world_id)  # 使用固定地图布局
+            self.spawn_large_agents(NUM_LARGE)
+            self.spawn_agents(NUM_AGENTS)
+        else:
+            # 环境生成顺序
+            self.generate_static_obstacles(NUM_OBSTACLES)
+            self.generate_danger_zones(NUM_DANGER_ZONES)
+            self.spawn_large_agents(NUM_LARGE)
+            self.spawn_agents(NUM_AGENTS)
+            self.place_victim()   # victim放在最后，以确保存在brain node
 
     # ========== 基础工具函数 ==========
     def is_in_obstacle(self, x, y):
@@ -159,42 +164,60 @@ class World:
         self.large_agents = []
         base_pos = None
         attempts = 0
+        if hasattr(self, "spawn_center"):
+            base_x, base_y = self.spawn_center
+            for i in range(num):
+                # 让每个大节点稍微分开
+                angle = (2 * math.pi / num) * i
+                r = 30 + random.uniform(-10, 10)
+                x = base_x + r * math.cos(angle)
+                y = base_y + r * math.sin(angle)
 
-        while attempts < 20:
-            # 随机一个基础点
-            x, y = self.random_free_pos(margin=60)
-            if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
-                base_pos = (x, y)
-                break
-            attempts += 1
-        if base_pos is None:
-            # fallback
-            base_pos = (WORLD_W/2, WORLD_H/2)
-            print("Warning: failed to find suitable base pos for large agents, using center.")
+                # 确保安全位置
+                if self.is_in_obstacle(x, y) or self.is_in_danger(x, y):
+                    x, y = self.random_free_pos(margin=60)
 
-        # 生成多个相互接近的大节点
-        for i in range(num):
-            for _ in range(300):
-                angle = random.uniform(0, 2 * math.pi)
-                r = random.uniform(0, 30)
-                x = base_pos[0] + r * math.cos(angle)
-                y = base_pos[1] + r * math.sin(angle)
-
-                # 边界约束
-                x = clamp(x, 0, WORLD_W)
-                y = clamp(y, 0, WORLD_H)
-
+                la = LargeAgent(
+                    i, x, y,
+                    multi_behavior=ERRTFrontierAssignmentBehavior(),
+                    behavior=PathPlanningBehavior()
+                )
+                self.large_agents.append(la)
+        else:
+            while attempts < 20:
+                # 随机一个基础点
+                x, y = self.random_free_pos(margin=60)
                 if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
-                    self.large_agents.append(LargeAgent(i, x, y,\
+                    base_pos = (x, y)
+                    break
+                attempts += 1
+            if base_pos is None:
+                # fallback
+                base_pos = (WORLD_W/2, WORLD_H/2)
+                print("Warning: failed to find suitable base pos for large agents, using center.")
+            # 生成多个相互接近的大节点
+            for i in range(num):
+                for _ in range(300):
+                    angle = random.uniform(0, 2 * math.pi)
+                    r = random.uniform(0, 30)
+                    x = base_pos[0] + r * math.cos(angle)
+                    y = base_pos[1] + r * math.sin(angle)
+
+                    # 边界约束
+                    x = clamp(x, 0, WORLD_W)
+                    y = clamp(y, 0, WORLD_H)
+
+                    if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
+                        self.large_agents.append(LargeAgent(i, x, y,\
+                                                            multi_behavior=ERRTFrontierAssignmentBehavior(),
+                                                            behavior=PathPlanningBehavior()))
+                        break
+                else:
+                    # 如果找不到合适位置，则直接使用base_pos附近
+                    self.large_agents.append(LargeAgent(i, base_pos[0] + random.uniform(-10, 10),
+                                                        base_pos[1] + random.uniform(-10, 10),
                                                         multi_behavior=ERRTFrontierAssignmentBehavior(),
                                                         behavior=PathPlanningBehavior()))
-                    break
-            else:
-                # 如果找不到合适位置，则直接使用base_pos附近
-                self.large_agents.append(LargeAgent(i, base_pos[0] + random.uniform(-10, 10),
-                                                    base_pos[1] + random.uniform(-10, 10),
-                                                    multi_behavior=ERRTFrontierAssignmentBehavior(),
-                                                    behavior=PathPlanningBehavior()))
         if self.large_agents:
             brain_node = min(self.large_agents, key=lambda a: a.id)
             brain_node.is_brain = True
@@ -284,6 +307,12 @@ class World:
 
     def update(self, dt, comms:Communication, now_time):
         # Tik
+        # 结束判断
+        # 死亡节点确认与剔除
+        # 动态脑节点选举
+        # 分层通信结构：小节点向脑节点周期发送 map_patch，脑节点整合地图
+        # 信息整合机制：receiver.integrate_map_patch() 更新全局地图 集体形成共享认知
+        # 自组织任务分配 执行 reason_and_assign() 并广播目标 忽视层级结构所有机器人都可以收到，大小结点之间无指挥关系
         self.time += dt
 
         victim_pos = self.victim.pos
@@ -330,7 +359,6 @@ class World:
             self.large_agents = alive_large_agents
         if len(self.large_agents) == 0 or len(self.agents) == 0:
             return  # 没有节点，跳过本轮更新
-        
 
         # 2) 更新每个代理的感知信息 -> 更新 local_map
         for a in self.agents + self.large_agents:
@@ -624,26 +652,84 @@ class World:
             except Exception as e:
                 print(f"Error in periodic communication for agent {a.id}: {e}")
 
-    def update_baseline(self, dt, comms:Communication, now_time):
+    def update_baseline_with_out_sons_arch(self, dt, comms:Communication, now_time):
+        # Tik
+        # 结束判断
+        # 死亡节点确认与剔除
+        # 动态脑节点选举
+        # 分层通信结构：小节点向脑节点周期发送 map_patch，脑节点整合地图
+        # 信息整合机制：receiver.integrate_map_patch() 更新全局地图 集体形成共享认知
+        # 自组织任务分配 执行 reason_and_assign() 并广播目标 忽视层级结构所有机器人都可以收到，大小结点之间无指挥关系
+        # TODO：任务分配没有考虑层级关系，也没有考虑通讯距离
+        # TODO：
         self.time += dt
-        # 1) 更新每个代理的感知信息 -> 更新 local_map
-        for a in self.agents + self.large_agents:
-            if not a.alive:
-                continue
-            try:
-                a.update_local_map_from_sensing(self)
-            except Exception as e:
-                print(f"Error updating local map for agent {a.id}: {e}")
 
-        # 2) deliver communications queued
-        # TODO: multi-step communication process
-        """
-        1. 脑节点给大节点分配任务组
-        2. 大节点给小节点分配逐个任务
-        3. 小节点发送地图补丁给大节点
-        4. 大节点给脑节点发消息补全信息
-        5. 小节点发现victim后发送救援警报给大节点和脑节点
-        """
+        victim_pos = self.victim.pos
+        victim_cell = cell_of_pos(victim_pos)
+        if self.brain_id is not None \
+            and self.large_agents[self.brain_id].known_map[victim_cell[1], victim_cell[0]] != UNKNOWN:
+            self.victim.rescued = True
+
+        # 1) 检查哪些节点还活着，选举脑节点
+        dead_agents = [a for a in self.agents if not a.alive]
+        self.wasted_agents.extend(dead_agents)
+        self.agents = [a for a in self.agents if a.alive]
+
+        dead_large = [la for la in self.large_agents if not la.alive and not la.is_brain]
+        self.wasted_large_agents.extend(dead_large)
+        alive_large_agents = [la for la in self.large_agents if la.alive]
+        
+        if self.brain_id is None or not self.large_agents[self.brain_id].alive:
+            if alive_large_agents:
+                # 选举成功
+                brain_node = min(alive_large_agents, key=lambda a: a.id)
+                id_in_list = alive_large_agents.index(brain_node)
+                
+                # 信息交接
+                brain_node.is_brain = True
+                brain_node.last_reason_time = self.large_agents[self.brain_id].last_reason_time
+                brain_node.known_map = np.copy(self.large_agents[self.brain_id].known_map)
+                brain_node.son_ids = list(getattr(self.large_agents[self.brain_id], "son_ids", []))
+                brain_node.father_id = None
+                brain_node.assigned = copy.deepcopy(self.large_agents[self.brain_id].assigned)
+
+                # 确认原来脑节点去逝
+                self.wasted_large_agents.append(self.large_agents[self.brain_id])
+                self.large_agents = alive_large_agents
+                self.large_agents[id_in_list] = brain_node
+                
+                # 最终交接
+                self.brain_id = self.large_agents.index(brain_node)
+            else:
+                self.large_agents = []
+                self.brain_id = None
+                return  # 没有活着的大节点，跳过本轮更新
+        else:
+            self.large_agents = alive_large_agents
+        if len(self.large_agents) == 0 or len(self.agents) == 0:
+            return  # 没有节点，跳过本轮更新
+        
+
+        # 2) 更新每个代理的感知信息 -> 更新 local_map
+        for a in self.agents + self.large_agents:
+            # try:
+            a.update_local_map_from_sensing(self)
+            # except Exception as e:
+            #     print(f"Error updating local map for agent {a.id}: {e}")
+
+        # 3) periodic communications: small agents send map patches to large agents if within range
+        for a in self.agents + self.large_agents:
+            if getattr(a, 'is_brain', False):
+                continue
+            # try:
+            # for la in self.large_agents:
+                # if distance(a.pos, la.pos) <= AGENT_COMM_RANGE:
+                    # a.send_map_patch(comms, [la], now_time)
+            a.send_map_patch(comms, [self.large_agents[self.brain_id]], now_time)
+            # except Exception as e:
+            #     print(f"Error in periodic communication for agent {a.id}: {e}")
+        # 4) deliver communications queued
+        # 多机器人系统之间的层级化的结构与信息互通
         deliveries = comms.deliver(now_time)
         for sender, receiver, msg in deliveries:
             # msg dispatch
@@ -657,70 +743,198 @@ class World:
                     receiver.has_goal = True
                     receiver.goal = msg['pos']
 
-        # 3) Large agents perform reasoning (System 2)
+        # 5) Large agents perform reasoning (System 2)
         for la in self.large_agents:
-            if not la.alive:
+            if not la.is_brain:
                 continue
-            try:
+            # try:
                 # 限制推理频率
-                if now_time - la.last_reason_time >= BRAIN_REASON_INTERVAL:
-                    la.reason_and_assign(self.agents, now_time)
-                    la.last_reason_time = now_time
-
-            except Exception as e:
-                print(f"Error in reasoning or task assignment for large agent {la.id}: {e}")
+            if now_time - la.last_reason_time >= BRAIN_REASON_INTERVAL:
+                assigns = la.reason_and_assign((self.agents + self.large_agents), now_time)
+                la.last_reason_time = now_time
+                for aid, wp in assigns.items():
+                    agent = next((a for a in self.agents if a.id == aid), None)
+                    if agent is not None:
+                        agent.has_goal = True
+                        agent.goal = wp
+                    Largeagent = next((a for a in self.large_agents if a.id == aid), None)
+                    if Largeagent is not None:
+                        Largeagent.has_goal = True
+                        Largeagent.goal = wp
+                break
+            # except Exception as e:
+            #     print(f"Error in reasoning or task assignment for large agent {la.id}: {e}")
 
         # 4) Agents decide & move
         for a in self.agents:
-            if not a.alive:
-                continue
-            try:
-                sense = a.sense(self)
-                desired_vx, desired_vy = a.behavior.decide(a, sense, dt)
-                # 限制速度范围
-                speed = math.hypot(desired_vx, desired_vy)
-                if speed > AGENT_MAX_SPEED:
-                    scale = AGENT_MAX_SPEED / (speed + 1e-9)
-                    desired_vx *= scale
-                    desired_vy *= scale
-                a.step_motion(desired_vx, desired_vy, dt, self)
+            # try:
+            sense = a.sense(self)
+            desired_vx, desired_vy = a.behavior.decide(a, sense, dt)
+            # 限制速度范围
+            speed = math.hypot(desired_vx, desired_vy)
+            if speed > AGENT_MAX_SPEED:
+                scale = AGENT_MAX_SPEED / (speed + 1e-9)
+                desired_vx *= scale
+                desired_vy *= scale
+            a.step_motion(desired_vx, desired_vy, dt, self)
 
-                # 更新已访问的网格单元
-                ci, cj = cell_of_pos(a.pos)
-                self.grid_visited_union.add((ci, cj))
-            except Exception as e:
-                print(f"Error in decision or motion for agent {a.id}: {e}")
+            # 更新已访问的网格单元
+            ci, cj = cell_of_pos(a.pos)
+            self.grid_visited_union.add((ci, cj))
+            # except Exception as e:
+            #     print(f"Error in decision or motion for agent {a.id}: {e}")
         for la in self.large_agents:
-            if not la.alive:
-                continue
-            try:
-                sense = la.sense(self)
-                desired_vx, desired_vy = la.behavior.decide(a, sense, dt)
-                # 限制速度范围
-                speed = math.hypot(desired_vx, desired_vy)
-                if speed > AGENT_MAX_SPEED:
-                    scale = AGENT_MAX_SPEED / (speed + 1e-9)
-                    desired_vx *= scale
-                    desired_vy *= scale
-                la.step_motion(desired_vx, desired_vy, dt, self)
+            # try:
+            sense = la.sense(self)
+            desired_vx, desired_vy = la.behavior.decide(la, sense, dt)
+            # 限制速度范围
+            speed = math.hypot(desired_vx, desired_vy)
+            if speed > AGENT_MAX_SPEED:
+                scale = AGENT_MAX_SPEED / (speed + 1e-9)
+                desired_vx *= scale
+                desired_vy *= scale
+            la.step_motion(desired_vx, desired_vy, dt, self)
 
-                # 更新已访问的网格单元
-                ci, cj = cell_of_pos(la.pos)
-                self.grid_visited_union.add((ci, cj))
-            except Exception as e:
-                print(f"Error in decision or motion for large agent {la.id}: {e}")
-
-        # 5) periodic communications: small agents send map patches to large agents if within range
-        for a in self.agents:
-            if not a.alive:
-                continue
-            try:
-                for la in self.large_agents:
-                    if not la.alive:
-                        continue
-                    if distance(a.pos, la.pos) <= AGENT_COMM_RANGE:
-                        a.send_map_patch(comms, [la], now_time)
-            except Exception as e:
-                print(f"Error in periodic communication for agent {a.id}: {e}")
+            # 更新已访问的网格单元
+            ci, cj = cell_of_pos(la.pos)
+            self.grid_visited_union.add((ci, cj))
+            # except Exception as e:
+            #     print(f"Error in decision or motion for large agent {la.id}: {e}")
 
 
+
+    # ======================== 生成固定位置的参数 ========================
+
+    def generate_fixed_map(self, map_id:int):
+        """
+        根据 map_id (1~10) 生成固定的障碍、危险区、受害者布局。
+        """
+        # 清空原始数据
+        self.obstacles.clear()
+        self.danger_zones.clear()
+        self.ground_grid[:] = FREE
+
+        if map_id == 1:
+            # ---------- 地图1：中心大障碍 + 四角危险区 ----------
+            self._add_rect_obstacle(400, 300, 200, 150)
+            self._add_danger(100, 100, 60)
+            self._add_danger(700, 100, 60)
+            self._add_danger(100, 500, 60)
+            self._add_danger(700, 500, 60)
+            self.victim = Victim(700, 650)
+            self.spawn_center = (100, 100)
+
+        elif map_id == 2:
+            # ---------- 地图2：迷宫状障碍 ----------
+            for x in range(100, 800, 150):
+                self._add_rect_obstacle(x, 200, 80, 20)
+                self._add_rect_obstacle(x - 50, 400, 80, 20)
+            self._add_danger(400, 150, 50)
+            self.victim = Victim(750, 450)
+            self.spawn_center = (150, 500)
+
+        elif map_id == 3:
+            # ---------- 地图3：狭长走廊 + 危险区 ----------
+            self._add_rect_obstacle(300, 100, 500, 40)
+            self._add_rect_obstacle(300, 460, 500, 40)
+            self._add_danger(500, 300, 70)
+            self.victim = Victim(750, 300)
+            self.spawn_center = (100, 300)
+
+
+        elif map_id == 4:
+            # ---------- 地图4：环形障碍 ----------
+            for angle in np.linspace(0, 2*np.pi, 8, endpoint=False):
+                x = 400 + 200 * np.cos(angle)
+                y = 300 + 150 * np.sin(angle)
+                self._add_rect_obstacle(x-20, y-20, 40, 40)
+            self._add_danger(400, 300, 50)
+            self.victim = Victim(700, 300)
+            self.spawn_center = (150, 150)
+
+        elif map_id == 5:
+            # ---------- 地图5：线性隧道 ----------
+            for y in range(50, 550, 100):
+                self._add_rect_obstacle(400, y, 40, 60)
+            self._add_danger(500, 250, 80)
+            self.victim = Victim(100, 300)
+            self.spawn_center = (700, 100)
+
+        elif map_id == 6:
+            # ---------- 地图6：对称障碍 + 中央危险区 ----------
+            self._add_rect_obstacle(200, 150, 100, 200)
+            self._add_rect_obstacle(600, 150, 100, 200)
+            self._add_danger(400, 300, 90)
+            self.victim = Victim(400, 500)
+            self.spawn_center = (100, 100)
+
+        elif map_id == 7:
+            # ---------- 地图7：双通道探测 ----------
+            self._add_rect_obstacle(400, 0, 40, 250)
+            self._add_rect_obstacle(400, 350, 40, 250)
+            self._add_danger(300, 300, 40)
+            self.victim = Victim(750, 300)
+            self.spawn_center = (150, 300)
+
+        elif map_id == 8:
+            # ---------- 地图8：多个小障碍随机排列 ----------
+            for _ in range(10):
+                x = random.randint(100, 700)
+                y = random.randint(100, 500)
+                self._add_rect_obstacle(x, y, 30, 30)
+            self._add_danger(600, 400, 60)
+            self.victim = Victim(100, 100)
+            self.spawn_center = (100, 500)
+
+        elif map_id == 9:
+            # ---------- 地图9：L形通道 ----------
+            self._add_rect_obstacle(300, 0, 40, 300)
+            self._add_rect_obstacle(300, 300, 400, 40)
+            self._add_danger(650, 200, 80)
+            self.victim = Victim(700, 400)
+            self.spawn_center = (150, 150)
+
+        elif map_id == 10:
+            # ---------- 地图10：大区域障碍分割 ----------
+            self._add_rect_obstacle(250, 200, 400, 40)
+            self._add_rect_obstacle(250, 400, 400, 40)
+            self._add_danger(400, 300, 60)
+            self.victim = Victim(750, 550)
+            self.spawn_center = (100, 100)
+
+        else:
+            raise ValueError("Invalid map_id, must be 1~10")
+
+        # 更新 ground_grid 状态
+        self._update_ground_grid()
+
+        print(f"✅ Fixed map {map_id} loaded.")
+
+    # ======================== 辅助函数 ========================
+    def _add_rect_obstacle(self, x, y, w, h):
+        obs = Obstacle(x, y, w, h)
+        self.obstacles.append(obs)
+
+    def _add_danger(self, x, y, r):
+        dz = DangerZone(x, y, r)
+        self.danger_zones.append(dz)
+
+    def _update_ground_grid(self):
+        """根据当前障碍物和危险区更新 ground_grid"""
+        self.ground_grid[:] = FREE
+        for obs in self.obstacles:
+            left = int(obs.rect.left // GRID_CELL)
+            right = int(obs.rect.right // GRID_CELL)
+            top = int(obs.rect.top // GRID_CELL)
+            bottom = int(obs.rect.bottom // GRID_CELL)
+            for i in range(left, right):
+                for j in range(top, bottom):
+                    if 0 <= i < GRID_W and 0 <= j < GRID_H:
+                        self.ground_grid[j, i] = OBSTACLE
+        for dz in self.danger_zones:
+            cx, cy = dz.pos
+            for i in range(GRID_W):
+                for j in range(GRID_H):
+                    gx, gy = pos_of_cell(i, j)
+                    if math.hypot(gx - cx, gy - cy) < dz.r:
+                        self.ground_grid[j, i] = DANGER

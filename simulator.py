@@ -17,7 +17,7 @@ from env import World
 # -----------------------------
 # 主循环与UI
 # -----------------------------
-def main():
+def main(rounds=1):
     global SEED
     if SEED is not None:
         random.seed(SEED)
@@ -31,8 +31,12 @@ def main():
 
     # communication system
     comms = Communication(packet_loss=COMM_PACKET_LOSS, delay=COMM_DELAY)
-
-    world = World(seed=SEED)
+    
+    # world
+    if rounds < 100:
+        world = World(seed=SEED,world_id=(1 + rounds//10))
+    else:
+        world = World(seed=SEED)
 
     running = True
     paused = False
@@ -139,6 +143,6 @@ def main():
 
 
 if __name__ == "__main__":
-    for i in range(100):
-        main()
+    for i in range(200): 
+        main(i)
     sys.exit(0)

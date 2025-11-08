@@ -158,7 +158,7 @@ class PathPlanningBehavior(Behavior):
         # ---- [1] 检查是否有目标 ----
         if not agent.has_goal or agent.goal is None:
             # 无目标 → 安全随机游走
-            # return self.safe_random_explore(agent, grid)
+            return self.safe_random_explore(agent, grid)
             return 0, 0
 
         # ---- [2] 检查是否到达目标 ----
@@ -166,7 +166,7 @@ class PathPlanningBehavior(Behavior):
         if goal_dist < self.goal_tolerance:
             agent.has_goal = False
             agent.goal = None
-            # return self.safe_random_explore(agent, grid)
+            return self.safe_random_explore(agent, grid)
             return 0, 0
 
         # ---- [3] 目标点是否变化？ ----
@@ -190,8 +190,8 @@ class PathPlanningBehavior(Behavior):
             path = self.astar(grid, start_cell, goal_cell)
             if path is None:
                 # 无路径 → 安全随机游走
+                return self.safe_random_explore(agent, grid)
                 return 0, 0
-                # return self.safe_random_explore(agent, grid)
             self.cached_path = path
             self.path_index = 0
             self.last_plan_time = now
@@ -214,7 +214,7 @@ class PathPlanningBehavior(Behavior):
         # ---- [6] 路径执行完毕 ----
         agent.has_goal = False
         agent.goal = None
-        # return self.safe_random_explore(agent, grid)
+        return self.safe_random_explore(agent, grid)
         return 0, 0
 
     # ======================================================
