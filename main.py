@@ -228,14 +228,14 @@ class FrontierBasedBehavior(Behavior):
         self.delta_time = 0.0
         self.path = None  # current planned path
         self.victim = None  # victim location if known
-        self.search_speed = 7.0  # pixels per second
-        self.rescue_speed = 25.0  # pixels per second
+        self.search_speed = 30.0  # pixels per second
+        self.rescue_speed = 50.0  # pixels per second
         self.thinking = True
 
     def decide(self, agent, sense_data, dt):
         self.delta_time += dt
         print(dt, self.delta_time)
-        if (self.delta_time < 10 and self.path is not None) or self.victim is not None:
+        if (self.delta_time < 3 and self.path is not None) or self.victim is not None:
             # continue toward last target
             self.thinking = False
             desired_vx, desired_vy = self.get_desired_velocity(agent)
@@ -823,7 +823,18 @@ class World:
                     for i in range(left, right + 1):
                         for j in range(top, bottom + 1):
                             gx, gy = pos_of_cell(i, j)
-                            if math.hypot(gx - x, gy - y) <= r:
+                            # 格子的边界坐标
+                            left_edge = gx - GRID_CELL/2
+                            right_edge = gx + GRID_CELL/2
+                            top_edge = gy - GRID_CELL/2
+                            bottom_edge = gy + GRID_CELL/2
+                            
+                            # 方法1a：计算到格子最近点的距离
+                            closest_x = max(left_edge, min(x, right_edge))
+                            closest_y = max(top_edge, min(y, bottom_edge))
+                            distance = math.hypot(closest_x - x, closest_y - y)
+                            
+                            if distance <= r:
                                 self.ground_grid[i, j] = DANGER
                     break
                 attempts += 1
