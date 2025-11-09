@@ -179,7 +179,7 @@ class World:
 
                 la = LargeAgent(
                     i, x, y,
-                    multi_behavior=ERRTFrontierAssignmentBehavior(),
+                    multi_behavior=InformedLocalAssignmentBehavior(),
                     behavior=PathPlanningBehavior()
                 )
                 self.large_agents.append(la)
@@ -209,14 +209,14 @@ class World:
 
                     if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
                         self.large_agents.append(LargeAgent(i, x, y,\
-                                                            multi_behavior=ERRTFrontierAssignmentBehavior(),
+                                                            multi_behavior=InformedLocalAssignmentBehavior(),
                                                             behavior=PathPlanningBehavior()))
                         break
                 else:
                     # 如果找不到合适位置，则直接使用base_pos附近
                     self.large_agents.append(LargeAgent(i, base_pos[0] + random.uniform(-10, 10),
                                                         base_pos[1] + random.uniform(-10, 10),
-                                                        multi_behavior=ERRTFrontierAssignmentBehavior(),
+                                                        multi_behavior=InformedLocalAssignmentBehavior(),
                                                         behavior=PathPlanningBehavior()))
         if self.large_agents:
             brain_node = min(self.large_agents, key=lambda a: a.id)
@@ -652,7 +652,7 @@ class World:
             except Exception as e:
                 print(f"Error in periodic communication for agent {a.id}: {e}")
 
-    def update_baseline_with_out_sons_arch(self, dt, comms:Communication, now_time):
+    def update_baseline_with_sons_arch(self, dt, comms:Communication, now_time):
         # Tik
         # 结束判断
         # 死亡节点确认与剔除
@@ -661,7 +661,7 @@ class World:
         # 信息整合机制：receiver.integrate_map_patch() 更新全局地图 集体形成共享认知
         # 自组织任务分配 执行 reason_and_assign() 并广播目标 忽视层级结构所有机器人都可以收到，大小结点之间无指挥关系
         # TODO：任务分配没有考虑层级关系，也没有考虑通讯距离
-        # TODO：
+        # TODO：机器人的行为逻辑可能需要调整以适应新的通信和任务分配机制
         self.time += dt
 
         victim_pos = self.victim.pos
@@ -691,7 +691,6 @@ class World:
                 brain_node.known_map = np.copy(self.large_agents[self.brain_id].known_map)
                 brain_node.son_ids = list(getattr(self.large_agents[self.brain_id], "son_ids", []))
                 brain_node.father_id = None
-                brain_node.assigned = copy.deepcopy(self.large_agents[self.brain_id].assigned)
 
                 # 确认原来脑节点去逝
                 self.wasted_large_agents.append(self.large_agents[self.brain_id])
@@ -710,96 +709,218 @@ class World:
             return  # 没有节点，跳过本轮更新
         
 
+        brain = None
+        if self.brain_id is not None and 0 <= self.brain_id < len(self.large_agents):
+            brain = self.large_agents[self.brain_id]
+
+        """
+        每轮更新前，重新确定层级关系：
+        Brain → Large → Small
+        """
+        # ---------------------
+        # 2️⃣ 大节点附属脑节点
+        # ---------------------
+        # self.large_agents[self.brain_id].son_ids = []
+        # for la in self.large_agents:
+        #     if la.father_id != self.brain_id:
+        #         la.father_id = self.brain_id
+        #     if la.id not in self.large_agents[self.brain_id].son_ids:
+        #         self.large_agents[self.brain_id].son_ids.append(la.id)
+
+        # ---------------------
+        # 3️⃣ 小节点寻找最近的大节点或脑节点
+        # ---------------------
+        for sa in self.agents:
+            # 原父节点
+            old_father_id = sa.father_id
+            old_father = self.find_agent_by_id(old_father_id)
+            # 候选父节点（所有大节点 + 脑节点）
+            candidates = self.large_agents.copy()
+            # 按距离排序
+            candidates = sorted(candidates, key=lambda a: distance(a.pos, sa.pos))
+            nearest = candidates[0]
+            # 计算距离差异
+            if old_father is not None:
+                dist_old = distance(sa.pos, old_father.pos)
+                dist_new = distance(sa.pos, nearest.pos)
+                # 若差异很小（比如<50像素），不切换
+                if abs(dist_new - dist_old) < 50:
+                    continue
+            else:
+                print(f"Agent {sa.id} had no father")
+                # 候选父节点（所有大节点 + 脑节点）
+                candidates = self.large_agents.copy()
+                # 按距离排序
+                candidates = sorted(candidates, key=lambda a: distance(a.pos, sa.pos))
+                nearest = candidates[0]
+
+            # 否则更新父节点
+            sa.father_id = nearest.id
+
+
+        # ---------------------
+        # 4️⃣ 清理无效子节点引用
+        # ---------------------
+        for agent in self.large_agents:
+            valid_sons = []
+            for sid in agent.son_ids:
+                child = self.find_agent_by_id(sid)
+                if child is not None and child.alive and child.father_id == agent.id:
+                    valid_sons.append(sid)
+            agent.son_ids = valid_sons
+
+        # print("[INFO] 层级关系更新完成 ✅")
+
         # 2) 更新每个代理的感知信息 -> 更新 local_map
         for a in self.agents + self.large_agents:
-            # try:
-            a.update_local_map_from_sensing(self)
-            # except Exception as e:
-            #     print(f"Error updating local map for agent {a.id}: {e}")
+            try:
+                a.update_local_map_from_sensing(self)
+            except Exception as e:
+                print(f"Error updating local map for agent {a.id}: {e}")
 
         # 3) periodic communications: small agents send map patches to large agents if within range
         for a in self.agents + self.large_agents:
-            if getattr(a, 'is_brain', False):
-                continue
-            # try:
-            # for la in self.large_agents:
-                # if distance(a.pos, la.pos) <= AGENT_COMM_RANGE:
-                    # a.send_map_patch(comms, [la], now_time)
-            a.send_map_patch(comms, [self.large_agents[self.brain_id]], now_time)
-            # except Exception as e:
-            #     print(f"Error in periodic communication for agent {a.id}: {e}")
+            try:
+                if a.getattr('is_large', False):
+                    a.send_map_patch(comms, [self.large_agents[self.brain_id]], now_time)
+                    continue
+                else:
+                    # choose nearest large agent (within comm range) else brain
+                    father = self.find_agent_by_id(a.father_id)
+                    if father is not None and distance(a.pos, father.pos) <= AGENT_COMM_RANGE:
+                        a.send_map_patch(comms, [father], now_time)
+            except Exception:
+                pass
+
         # 4) deliver communications queued
         # 多机器人系统之间的层级化的结构与信息互通
         deliveries = comms.deliver(now_time)
+        aid_requests = []
         for sender, receiver, msg in deliveries:
             # msg dispatch
-            if msg.get('type') == 'map_patch':
+            t = msg.get('type', '').upper()
+            if t  == 'map_patch':
                 # receiver should integrate patch
                 if isinstance(receiver, LargeAgent):
                     receiver.integrate_map_patch(msg['patch'])
-            elif msg.get('type') == 'rescue_alert':
+            elif t in ('AID_REQUEST', 'EMERGENCY', 'DEATH_REPORT'):
+                aid_requests.append((sender, receiver, msg))
+            elif t == 'rescue_alert':
                 # receiver may prioritize moving to victim
                 if isinstance(receiver, AgentBase):
                     receiver.has_goal = True
                     receiver.goal = msg['pos']
 
-        # 5) Large agents perform reasoning (System 2)
-        for la in self.large_agents:
-            if not la.is_brain:
-                continue
-            # try:
-                # 限制推理频率
-            if now_time - la.last_reason_time >= BRAIN_REASON_INTERVAL:
-                assigns = la.reason_and_assign((self.agents + self.large_agents), now_time)
-                la.last_reason_time = now_time
-                for aid, wp in assigns.items():
-                    agent = next((a for a in self.agents if a.id == aid), None)
-                    if agent is not None:
-                        agent.has_goal = True
-                        agent.goal = wp
-                    Largeagent = next((a for a in self.large_agents if a.id == aid), None)
-                    if Largeagent is not None:
-                        Largeagent.has_goal = True
-                        Largeagent.goal = wp
-                break
-            # except Exception as e:
-            #     print(f"Error in reasoning or task assignment for large agent {la.id}: {e}")
+        # F) Brain periodic global planning + handling aid requests
 
-        # 4) Agents decide & move
-        for a in self.agents:
-            # try:
-            sense = a.sense(self)
-            desired_vx, desired_vy = a.behavior.decide(a, sense, dt)
-            # 限制速度范围
-            speed = math.hypot(desired_vx, desired_vy)
-            if speed > AGENT_MAX_SPEED:
-                scale = AGENT_MAX_SPEED / (speed + 1e-9)
-                desired_vx *= scale
-                desired_vy *= scale
-            a.step_motion(desired_vx, desired_vy, dt, self)
+        if brain is not None:
+            # process incoming aid/emergency messages (reassign or escalate)
+            if aid_requests:
+                # simple policy: if any emergency -> brain will re-plan and broadcast immediate assists
+                # collect urgent positions
+                urgents = [m for (_,_,m) in aid_requests if m.get('urgency',0) >= 1.0 or m.get('type','').upper() in ('EMERGENCY','DEATH_REPORT')]
+                if urgents:
+                    # compute reinforcement: choose closest large agent(s) to each urgent
+                    for req in urgents:
+                        pos = req.get('pos', None)
+                        if pos is None:
+                            continue
+                        # find nearest alive large agent that isn't the brain itself
+                        cand = [la for la in self.large_agents if la.alive and (la is not brain)]
+                        if cand:
+                            cand.sort(key=lambda la: math.hypot(la.pos[0]-pos[0], la.pos[1]-pos[1]))
+                            # dispatch top-1 reinforcement: set goal on that la (and optionally its subordinates)
+                            target_la = cand[0]
+                            target_la.has_goal = True
+                            target_la.goal = pos
+                            # also notify via comms
+                            comms.send(brain, target_la, {'type':'AID_ASSIGN','from':brain.id, 'pos':pos}, now_time)
+
+            # periodic compute global plan
+            if not hasattr(brain, 'brain_planner'):
+                brain.brain_planner = BrainGlobalPlanner(plan_interval=5.0)
+            try:
+                # 限制推理频率
+                if now_time - brain.brain_reason_time >= BRAIN_REASON_INTERVAL:
+                    assigns = brain.brain_reason_and_assign(self.large_agents, now_time)
+                    brain.brain_reason_time = now_time
+                    for aid, wp in assigns.items():
+                        Largeagent = next((a for a in self.large_agents if a.id == aid), None)
+                        if Largeagent is not None:
+                            Largeagent.has_goal = True
+                            Largeagent.goal = wp
+            except Exception as e:
+                print(f"Error in reasoning or task assignment for large agent")
+
+        # (G) Large agents: reason_and_assign (medium-frequency)
+        for la in self.large_agents:
+            try:
+                # only brain node handles global plan; each large agent will act on messages in its handler
+                if now_time - getattr(la, 'last_reason_time', -1e9) >= BRAIN_REASON_INTERVAL:
+                    assigns = {}
+                    try:
+                        assigns = la.reason_and_assign(self.agents, now_time) or {}
+                    except Exception:
+                        print(f"Error in reason_and_assign for large agent {la.id}")
+                    # push assignments to children (via comms or direct set)
+                    if isinstance(assigns, dict):
+                        for aid, wp in assigns.items():
+                            target_agent = next((x for x in self.agents if x.id == aid), None)
+                            if target_agent is not None:
+                                target_agent.has_goal = True
+                                target_agent.goal = wp
+                    la.last_reason_time = now_time
+            except Exception:
+                # tolerate reasoning errors
+                pass
+
+        # (H) Small agents: accept & adjust goals, detect emergencies, request aid
+        for a in list(self.agents):  # iterate over copy (some may die)
+            try:
+                if a.has_goal and a.goal is not None:
+                    # let agent attempt to locally adjust goal using its local_map
+                    try:
+                        accepted = a._agent_accept_and_adjust_goal(self)
+                    except Exception:
+                        pass
+
+                # emergency detection: if agent is in danger zone, or near a dead peer etc.
+                sense = a.sense(self)
+                desired_vx, desired_vy = a.behavior.decide(a, sense, dt)
+                a.step_motion(desired_vx, desired_vy, dt, self)
+            except Exception:
+                # keep simulation robust
+                pass
 
             # 更新已访问的网格单元
             ci, cj = cell_of_pos(a.pos)
             self.grid_visited_union.add((ci, cj))
             # except Exception as e:
             #     print(f"Error in decision or motion for agent {a.id}: {e}")
+        # (I) Large agents also check assigned goals: ensure safety and request reinforcements if not safe
         for la in self.large_agents:
-            # try:
-            sense = la.sense(self)
-            desired_vx, desired_vy = la.behavior.decide(la, sense, dt)
-            # 限制速度范围
-            speed = math.hypot(desired_vx, desired_vy)
-            if speed > AGENT_MAX_SPEED:
-                scale = AGENT_MAX_SPEED / (speed + 1e-9)
-                desired_vx *= scale
-                desired_vy *= scale
-            la.step_motion(desired_vx, desired_vy, dt, self)
-
-            # 更新已访问的网格单元
-            ci, cj = cell_of_pos(la.pos)
-            self.grid_visited_union.add((ci, cj))
-            # except Exception as e:
-            #     print(f"Error in decision or motion for large agent {la.id}: {e}")
+            try:
+                if la.has_goal and la.goal is not None:
+                    safe = True
+                    try:
+                        # fallback: check la.known_map grid
+                        i,j = cell_of_pos(la.goal)
+                        if 0 <= i < GRID_W and 0 <= j < GRID_H:
+                            val = la.known_map[j, i]
+                            safe = (val != OBSTACLE and val != DANGER)
+                    except Exception:
+                        print(f"Error checking safety for assigned goal of agent ")
+                    if not safe:
+                        # if not safe, attempt to find nearby safe alternative
+                        try:
+                            adjusted = la._agent_accept_and_adjust_goal(wp)  # optional method
+                        except Exception:
+                            print(f"Error adjusting unsafe assigned goal for agent ")
+                sense = la.sense(self)
+                desired_vx, desired_vy = la.behavior.decide(la, sense, dt)
+                la.step_motion(desired_vx, desired_vy, dt, self)
+            except Exception:
+                pass
 
 
 
@@ -938,3 +1059,13 @@ class World:
                     gx, gy = pos_of_cell(i, j)
                     if math.hypot(gx - cx, gy - cy) < dz.r:
                         self.ground_grid[j, i] = DANGER
+
+
+    def find_agent_by_id(self, id_):
+        if id_ is None:
+            print(f"Warning: find_agent_by_id called {id_} with None id")
+            return None
+        for a in self.agents + self.large_agents:
+            if a.id == id_:
+                return a
+        return None

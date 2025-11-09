@@ -65,7 +65,7 @@ def main(rounds=1):
                     elif event.key == pygame.K_s:  # 手动保存截图
                         save_simulation_screenshot(screen, world, sim_time, "manual")
         if not paused:
-            world.update(dt, comms, now_time)
+            world.update_baseline_with_sons_arch(dt, comms, now_time)
 
         # 绘制（仅在可视化模式下启用）
         if VISUALIZE:
@@ -90,7 +90,7 @@ def main(rounds=1):
             pygame.display.flip()
 
         # 结束条件判断
-        print("len(world.large_agents)",len(world.large_agents))
+        # print("len(world.large_agents)",len(world.large_agents))
         if world.victim.rescued:
             simulation_result = "success"
             print("Mission success: victim rescued")

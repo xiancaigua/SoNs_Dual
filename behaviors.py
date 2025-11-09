@@ -5,9 +5,11 @@ import random
 import numpy as np
 import heapq
 from scipy.optimize import linear_sum_assignment
+from scipy.cluster.hierarchy import fclusterdata
 from utils import *
 from model import SlowModel  # 导入你的模型定义
-import matplotlib.pyplot as plt
+import time
+from sklearn.cluster import DBSCAN
 
 # -----------------------------
 # 行为模块（策略模式）
@@ -613,4 +615,473 @@ class ERRTFrontierAssignmentBehavior(Multi_Behavior):
                         gx, gy = pos_of_cell(x, y)
                         frontiers.append((gx, gy))
         return frontiers
+
+class BrainGlobalPlanner(Multi_Behavior):
+    def __init__(self, frontier_threshold=0.5, sensor_range=6.0, 
+                 weight_distance=1.0, weight_gain=2.0, weight_actuation=0.5):
+        self.frontier_threshold = frontier_threshold
+        self.sensor_range = sensor_range
+        self.weights = {
+            'distance': weight_distance,
+            'gain': weight_gain,
+            'actuation': weight_actuation
+        }
+        self.largents = []
+        self.last_assignment = {}
+        self.candidate_goals = []
+        self.plan_interval = BRAIN_REASON_INTERVAL
+        self.last_plan_time = 0.0
+        self.cluster_eps = SENSOR_LARGE * 0.4
+
+    def generate_pseudo_random_goals(self, global_map, num_goals=20):
+        """生成伪随机目标点（类似E-RRT的目标生成策略）"""
+        frontiers = self.find_frontiers(global_map)
+        if not frontiers:
+            return []
+
+        # 从前沿点中随机选择候选目标
+        indices = np.random.choice(len(frontiers), 
+                                 min(num_goals, len(frontiers)), 
+                                 replace=False)
+        return [frontiers[i] for i in indices]
+
+    def calculate_information_gain(self, goal, global_map, agent_pos):
+        """计算目标点的信息增益（类似E-RRT的探索收益评估）"""
+        x, y = goal
+        info_gain = 0
+        
+        # 模拟传感器视野（简化版）
+        for dy in range(-int(self.sensor_range), int(self.sensor_range)+1):
+            for dx in range(-int(self.sensor_range), int(self.sensor_range)+1):
+                dist = math.sqrt(dx**2 + dy**2)
+                if dist <= self.sensor_range:
+                    nx, ny = x + dx, y + dy
+                    if (0 <= nx < global_map.shape[1] and 
+                        0 <= ny < global_map.shape[0]):
+                        try:
+                            if global_map[ny, nx] == UNKNOWN:  # 未知区域
+                                # 检查视线是否被阻挡（简化版碰撞检测）
+                                if self.line_of_sight_clear((x, y), (nx, ny), global_map):
+                                    info_gain += 1
+                        except:
+                            pass
+        return info_gain
+
+    def line_of_sight_clear(self, start, end, global_map):
+        """检查两点之间视线是否清晰（简化版碰撞检测）"""
+        x1, y1 = start
+        x2, y2 = end
+        
+        # Bresenham直线算法检查路径上的点
+        points = self.bresenham_line(x1, y1, x2, y2)
+        for px, py in points:
+            if (0 <= px < global_map.shape[1] and 
+                0 <= py < global_map.shape[0]):
+                if global_map[py, px] == OBSTACLE:  # 障碍物
+                    return False
+        return True
+
+    def bresenham_line(self, x1, y1, x2, y2):
+        """Bresenham直线算法"""
+        points = []
+        dx = abs(x2 - x1)
+        dy = abs(y2 - y1)
+        x, y = x1, y1
+        sx = -1 if x1 > x2 else 1
+        sy = -1 if y1 > y2 else 1
+        
+        if dx > dy:
+            err = dx / 2.0
+            while x != x2:
+                points.append((x, y))
+                err -= dy
+                if err < 0:
+                    y += sy
+                    err += dx
+                x += sx
+        else:
+            err = dy / 2.0
+            while y != y2:
+                points.append((x, y))
+                err -= dx
+                if err < 0:
+                    x += sx
+                    err += dy
+                y += sy
+        points.append((x, y))
+        return points
+
+    def calculate_distance_cost(self, agent_pos, goal):
+        """计算距离成本"""
+        return np.linalg.norm(np.array(agent_pos) - np.array(goal))
+
+    def build_cost_matrix(self, agents, candidate_goals, global_map):
+        """构建多目标优化的成本矩阵"""
+        num_agents = len(agents)
+        num_goals = len(candidate_goals)
+        
+        # 初始化成本矩阵
+        cost_matrix = np.zeros((num_agents, num_goals))
+        
+        for i, agent in enumerate(agents):
+            for j, goal in enumerate(candidate_goals):
+                # 距离成本
+                dist_cost = self.calculate_distance_cost(agent.pos, goal)
+                
+                # 信息增益（负成本，因为我们要最大化增益）
+                info_gain = self.calculate_information_gain(goal, global_map, agent.pos)
+                gain_cost = -info_gain  # 负号表示我们要最大化这个值
+                
+                
+                # 加权总和（类似E-RRT的代价函数）
+                total_cost = (self.weights['distance'] * dist_cost +
+                            self.weights['gain'] * gain_cost)
+                
+                cost_matrix[i, j] = total_cost
+                
+        return cost_matrix
+
+    def optimize_assignment(self, cost_matrix):
+        """使用匈牙利算法进行最优分配"""
+        # 匈牙利算法求解最小成本匹配
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        return row_ind, col_ind      
+
+    def decide(self, brain_agent, large_agents):
+        now = time.time()
+        if now - self.last_plan_time < self.plan_interval:
+            return None
+        self.last_plan_time = now
+
+        self.largents = large_agents
+        self.min_cluster_size = max(NUM_LARGE, len(large_agents))
+        global_map = brain_agent.known_map
+        goals = self.compute_global_plan(global_map)
+
+        if not goals or len(large_agents) == 0:
+            return None
+
+        # 基于距离的匈牙利分配
+        cost_matrix = self.build_cost_matrix(large_agents, goals, global_map)
+
+        # 3. 使用优化算法进行分配
+        try:
+            row_ind, col_ind = self.optimize_assignment(cost_matrix)
+
+            # 4. 构建分配结果
+            assignments = {}
+            for i, agent_id in enumerate([a.id for a in large_agents]):
+                if i in row_ind:
+                    match_idx = np.where(row_ind == i)[0][0]
+                    goal_idx = col_ind[match_idx]
+                    assignments[agent_id] = goals[goal_idx]
+                else:
+                    # 如果没有匹配到目标，使用fallback策略
+                    assignments[agent_id] = self.fallback_assignment(large_agents[i], global_map)
+                    print(f"Agent {agent_id} has no matched goal, using fallback.")
+        except Exception as e:
+            print(f"Optimization failed: {e}, using fallback strategy")
+            return self.fallback_assignment_strategy(large_agents, global_map)
+
+        # row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        # assignments = {large_agents[i].id: goals[j] for i, j in zip(row_ind, col_ind)}
+        return assignments
     
+
+    def fallback_assignment(self, agent, global_map):
+        """备选分配策略（当优化失败时使用）"""
+        frontiers = self.find_frontiers(global_map)
+        if not frontiers:
+            return None
+        
+        # 简单的最远前沿策略
+        distances = [np.linalg.norm(np.array(agent.pos) - np.array(f)) 
+                    for f in frontiers]
+        return frontiers[np.argmax(distances)]
+
+    def fallback_assignment_strategy(self, agents, global_map):
+        """全局备选分配策略"""
+        frontiers = self.find_frontiers(global_map)
+        if not frontiers:
+            return {a.id: None for a in agents}
+        
+        # 使用原始的距离最近分配策略
+        assignments = {}
+        available = frontiers.copy()
+        for agent in agents:
+            if not available:
+                assignments[agent.id] = None
+                continue
+            distances = [np.linalg.norm(np.array(agent.pos) - np.array(f)) 
+                        for f in available]
+            target = available[np.argmin(distances)]
+            assignments[agent.id] = target
+            available.remove(target)
+        
+        return assignments
+
+    # =====================================================
+    # 全局任务生成
+    # =====================================================
+    def compute_global_plan(self, global_map):
+        """根据全局地图生成若干高层目标点"""
+        global_goals = []
+        frontiers = self.find_frontiers(global_map)
+        if frontiers is None or len(frontiers) == 0:
+            return []
+
+        clusters = self.cluster_frontiers(frontiers)
+        selected_clusters = [self.cluster_centroid(c) for c in clusters if len(c) > self.min_cluster_size]
+        selected_clusters.sort(reverse=True, key=lambda x: x[0])
+        for cnt,centroid in enumerate(selected_clusters):
+            if centroid is not None:
+                global_goals.append(centroid)
+        final = []
+        for g in global_goals:
+            gx = clamp(g[0], 0, WORLD_W)
+            gy = clamp(g[1], 0, WORLD_H)
+            if not any(math.hypot(gx - f[0], gy - f[1]) < 10.0 for f in final):
+                final.append((gx, gy))
+        self.global_goals = final
+        return self.global_goals
+
+
+    def find_frontiers(self, global_map):
+        """识别地图前沿区域（修正版）"""
+        frontiers = []
+        for y in range(1, global_map.shape[0] - 1):
+            for x in range(1, global_map.shape[1] - 1):
+                if global_map[y, x] == UNKNOWN:
+                    neighbors = global_map[y-1:y+2, x-1:x+2].flatten()
+                    if np.any(neighbors == FREE):
+                        # ✅ 将网格坐标转换为世界坐标
+                        gx, gy = pos_of_cell(x, y)
+                        frontiers.append((gx, gy))
+        return frontiers
+
+    # =====================================================
+    # 前沿聚类（Frontier Clustering）
+    # =====================================================
+    
+    def cluster_frontiers(self, frontiers_world_pts):
+        # 使用简单的聚类（基于距离） -> 返回 list of arrays of points
+        if frontiers_world_pts is None or len(frontiers_world_pts) == 0:
+            return []
+        if len(frontiers_world_pts) <= self.min_cluster_size:
+            # too few points -> each point is its own small cluster (but we'll filter later)
+            return [frontiers_world_pts]
+
+        # fclusterdata from scipy: Euclidean clustering; t = cluster_eps, criterion='distance'
+        try:
+            labels = fclusterdata(frontiers_world_pts, t=self.cluster_eps, criterion='distance')
+            clusters = []
+            for lab in np.unique(labels):
+                members = frontiers_world_pts[labels == lab]
+                if len(members) >= 1:
+                    clusters.append(members)
+            return clusters
+        except Exception:
+            # fallback: simple grid-binning clustering
+            bins = {}
+            for x,y in frontiers_world_pts:
+                bx = int(x // self.cluster_eps)
+                by = int(y // self.cluster_eps)
+                bins.setdefault((bx,by),[]).append((x,y))
+            return [np.array(v) for v in bins.values()]
+    
+    # def cluster_frontiers(self, frontiers):
+    #     """
+    #     使用DBSCAN对前沿点进行聚类
+    #     每个簇代表一个潜在探索区域
+    #     """
+    #     if len(frontiers) == 0:
+    #         return []
+
+    #     # DBSCAN聚类
+    #     clustering = DBSCAN(eps=self.eps, min_samples=self.min_samples).fit(frontiers)
+    #     labels = clustering.labels_
+
+    #     clusters = []
+    #     for label in set(labels):
+    #         if label == -1:  # 噪声点跳过
+    #             continue
+    #         cluster_points = frontiers[labels == label]
+    #         clusters.append(cluster_points)
+
+    #     return clusters
+
+    # =====================================================
+    # 计算每个簇的中心点
+    # =====================================================
+    def cluster_centroid(self, cluster_points):
+        """
+        计算聚类中心（加权或简单平均）
+        """
+        if len(cluster_points) == 0:
+            return None
+
+        # 简单平均（可替换为加权中心）
+        cx = np.mean(cluster_points[:, 0])
+        cy = np.mean(cluster_points[:, 1])
+        return (cx, cy)
+
+class InformedLocalAssignmentBehavior(Multi_Behavior):
+    """
+    信息驱动的局部任务分配行为
+    ----------------------------------------
+    功能：
+      - 在大节点目标点周围采样；
+      - 加入约束（靠近本体且不过远离局部目标）；
+      - 计算信息增益并选择最优采样点；
+      - 使用匈牙利算法分配；
+      - 自动将大节点自身目标点后移到安全位置。
+    """
+
+    def __init__(self,
+                 sample_radius=30,
+                 num_samples=50,
+                 num_selected=12,
+                 safe_margin=20,
+                 sensor_range=6.0,
+                 w_gain=2.0,
+                 w_large_dist=1.0,
+                 w_goal_dist=1.0,
+                 retreat_ratio=0.85):
+        self.sample_radius = sample_radius      # 采样半径
+        self.num_samples = num_samples          # 采样候选数量
+        self.num_selected = num_selected        # 最终选择的目标数
+        self.safe_margin = safe_margin
+        self.sensor_range = sensor_range
+        self.w_gain = w_gain
+        self.w_large_dist = w_large_dist
+        self.w_goal_dist = w_goal_dist
+        self.retreat_ratio = retreat_ratio
+        self.last_assignment = {}
+
+    # =====================================================
+    # 主接口
+    # =====================================================
+    def decide(self, large_agent, sub_agents):
+        if large_agent.goal is None:
+            return {a.id: None for a in sub_agents}
+
+        global_map = large_agent.known_map
+        large_pos = np.array(large_agent.pos)
+        goal_pos = np.array(large_agent.goal)
+
+        # 1️⃣ 采样并计算信息增益
+        sampled_points = self.sample_candidates(global_map, large_pos, goal_pos)
+
+        if not sampled_points:
+            print(f"[Warning] LargeAgent {large_agent.id}: 无有效采样点")
+            return {a.id: None for a in sub_agents}
+
+        # 2️⃣ 从采样点中选出最优若干个
+        selected_points = self.select_best_points(global_map, sampled_points, large_pos, goal_pos)
+
+        if len(selected_points) == 0:
+            return {a.id: None for a in sub_agents}
+
+        # 3️⃣ 构建代价矩阵并分配小节点
+        cost_matrix = np.zeros((len(sub_agents), len(selected_points)))
+        for i, ag in enumerate(sub_agents):
+            for j, g in enumerate(selected_points):
+                cost_matrix[i, j] = np.linalg.norm(np.array(ag.pos) - np.array(g))
+
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        assignments = {}
+        for i, ag in enumerate(sub_agents):
+            if i in row_ind:
+                j = col_ind[np.where(row_ind == i)[0][0]]
+                assignments[ag.id] = selected_points[j]
+            else:
+                assignments[ag.id] = None
+
+        self.last_assignment = assignments
+
+        # 4️⃣ 调整大节点自身目标（后移）
+        large_agent.goal = self.recede_large_goal(large_pos, goal_pos)
+
+        return assignments
+
+    # =====================================================
+    # 候选点采样
+    # =====================================================
+    def sample_candidates(self, global_map, large_pos, goal_pos):
+        """在局部区域随机采样若干候选点"""
+        cx, cy = goal_pos
+        candidates = []
+        for _ in range(self.num_samples):
+            ang = np.random.uniform(0, 2 * np.pi)
+            r = np.random.uniform(0.3 * self.sample_radius, self.sample_radius)
+            x = int(cx + r * np.cos(ang))
+            y = int(cy + r * np.sin(ang))
+            i,j = cell_of_pos((x, y))
+            if 0 <= i < global_map.shape[1] and 0 <= j < global_map.shape[0]:
+                if self.is_point_safe(global_map, (i, j)):
+                    candidates.append((x, y))
+        return candidates
+
+    def is_point_safe(self, global_map, point):
+        """检查该点附近是否安全"""
+        x, y = point
+        region = global_map[max(0, y-2):min(global_map.shape[0], y+3),
+                            max(0, x-2):min(global_map.shape[1], x+3)]
+        if np.any(region == OBSTACLE) or np.any(region == DANGER):
+            return False
+        return True
+
+    # =====================================================
+    # 信息增益与多目标评分
+    # =====================================================
+    def select_best_points(self, global_map, candidates, large_pos, goal_pos):
+        """计算信息增益 + 距离约束，选出最优采样点"""
+        scored_points = []
+        for pt in candidates:
+            info_gain = self.calculate_information_gain(global_map, pt)
+            dist_large = np.linalg.norm(np.array(pt) - large_pos)
+            dist_goal = np.linalg.norm(np.array(pt) - goal_pos)
+
+            # 奖励靠近大节点，惩罚远离目标
+            score = (self.w_gain * info_gain
+                     - self.w_large_dist * dist_large
+                     - self.w_goal_dist * dist_goal)
+            scored_points.append((score, pt))
+
+        # 按得分排序，取前K个
+        scored_points.sort(reverse=True, key=lambda x: x[0])
+        best = [p for _, p in scored_points[:self.num_selected]]
+        return best
+
+    def calculate_information_gain(self, global_map, center):
+        """估算某点的信息增益（统计视野范围内未知格数）"""
+        cx, cy = center
+        r = int(self.sensor_range)
+        x0 = max(0, cx - r)
+        x1 = min(global_map.shape[1], cx + r)
+        y0 = max(0, cy - r)
+        y1 = min(global_map.shape[0], cy + r)
+        region = global_map[y0:y1, x0:x1]
+        return np.sum(region == UNKNOWN)
+
+    # =====================================================
+    # 大节点目标后移
+    # =====================================================
+    def recede_large_goal(self, large_pos, goal_pos):
+        """将大节点目标往自身方向缩回一定比例"""
+        dx, dy = goal_pos[0] - large_pos[0], goal_pos[1] - large_pos[1]
+        new_gx = large_pos[0] + dx * self.retreat_ratio
+        new_gy = large_pos[1] + dy * self.retreat_ratio
+        return (new_gx, new_gy)
+
+
+
+
+
+
+
+
+
+
+
+

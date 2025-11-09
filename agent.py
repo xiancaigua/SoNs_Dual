@@ -212,7 +212,7 @@ class AgentBase:
         self.son_ids = []
         self.hist = [self.pos]
         self.is_large = is_large
-        self.death_prob = 0.4  # ✅ 死亡概率参数（可调）
+        self.death_prob = 0.8  # ✅ 死亡概率参数（可调）
 
         if behavior is not None:
             self.behavior = behavior
@@ -286,6 +286,31 @@ class AgentBase:
             desired_vx *= scale
             desired_vy *= scale
 
+        parent = env.find_agent_by_id(self.father_id)
+        if parent is not None and parent.alive:
+            px, py = parent.pos
+            cx, cy = self.pos
+            parent_vec = np.array([px - cx, py - cy])
+            dist_to_parent = np.linalg.norm(parent_vec)
+
+            # 如果距离超过安全范围，加入吸引力（让它更靠近父节点）
+            if dist_to_parent > AGENT_COMM_RANGE * 0.8:
+                dir_to_parent = parent_vec / (dist_to_parent + 1e-6)
+                # 吸引分量，越远吸引越强
+                attraction = 0.25 * (dist_to_parent - AGENT_COMM_RANGE * 0.8)
+                desired_vx += attraction * dir_to_parent[0]
+                desired_vy += attraction * dir_to_parent[1]
+
+            # 如果超出最大距离 -> 强制回归（忽略原目标）
+            if dist_to_parent > AGENT_COMM_RANGE * 1.2:
+                dir_to_parent = parent_vec / (dist_to_parent + 1e-6)
+                desired_vx = AGENT_MAX_SPEED * dir_to_parent[0]
+                desired_vy = AGENT_MAX_SPEED * dir_to_parent[1]
+                # 可以标记状态（进入“reconnect模式”）
+                self.state = "RETURN_TO_PARENT"
+            else:
+                self.state = "NORMAL"
+
         new_x = clamp(self.pos[0] + desired_vx * dt, 2, WORLD_W-2)
         new_y = clamp(self.pos[1] + desired_vy * dt, 2, WORLD_H-2)
         new_pos = (new_x, new_y)
@@ -328,9 +353,16 @@ class AgentBase:
     # =====================================================
     def broadcast_death_alert(self, env):
         """机器人死亡后通报其位置，使其他机器人认为此区域危险"""
-        for other in env.agents + env.large_agents:
-            if other.alive and distance(self.pos, other.pos) < AGENT_COMM_RANGE:
+        if self.is_large:
+            for other in env.large_agents:
                 other.receive_death_alert(self.pos)
+            for other in env.agents:
+                if other.alive and distance(self.pos, other.pos) < AGENT_COMM_RANGE:
+                    other.receive_death_alert(self.pos)
+        else:
+            for other in env.agents + env.large_agents:
+                if other.alive and distance(self.pos, other.pos) < AGENT_COMM_RANGE:
+                    other.receive_death_alert(self.pos)
 
     # =====================================================
     # 接收死亡通报
@@ -338,7 +370,7 @@ class AgentBase:
     def receive_death_alert(self, danger_pos):
         """接收同伴死亡信息后，在local_map上划定经验危险区"""
         cx, cy = cell_of_pos(danger_pos)
-        r = 5  # 经验危险半径（格）
+        r = 15  # 经验危险半径（格）
         for dx in range(-r, r+1):
             for dy in range(-r, r+1):
                 nx, ny = cx + dx, cy + dy
@@ -346,6 +378,65 @@ class AgentBase:
                     if math.hypot(dx, dy) <= r:
                         if self.local_map[ny, nx] == UNKNOWN:
                             self.local_map[ny, nx] = DANGER  # ✅ 主观危险区域
+
+    # ------------------------------
+    # 辅助：小节点/大节点的默认行为扩展
+    # ------------------------------
+    def _agent_accept_and_adjust_goal(agent, world, search_radius_cells=3):
+        """
+        接收目标点后在本地地图附近寻找最近的安全格（不在 OBSTACLE）
+        返回 True if adjusted/accepted, False otherwise
+        """
+        if agent.goal is None:
+            return False
+        gx, gy = agent.goal
+        gi, gj = cell_of_pos((gx, gy))
+        H, W = agent.local_map.shape
+        # BFS-like search around target cell for FREE or VICTIM (note agent.local_map uses j,i indexing)
+        best = None
+        for r in range(0, search_radius_cells+1):
+            for di in range(-r, r+1):
+                for dj in range(-r, r+1):
+                    i = gi + di
+                    j = gj + dj
+                    if 0 <= i < W and 0 <= j < H:
+                        val = agent.local_map[j, i]
+                        if val == FREE or val == VICTIM:
+                            # convert back to world pos
+                            px, py = pos_of_cell(i, j)
+                            # safety check vs known brain map/danger if available
+                            best = (px, py)
+                            return_agent_goal = best
+                            agent.goal = best
+                            agent.has_goal = True
+                            return True
+        # cannot find safe local point
+        return False
+
+    def _agent_execute_retreat(agent, world, retreat_distance=30.0):
+        """
+        简单避险：沿速度反向或指向所属大节点退回
+        """
+        # choose vector away from nearest danger center if known (brain)
+        # fallback: reverse current velocity
+        if (agent.vel[0] != 0 or agent.vel[1] != 0):
+            vx, vy = agent.vel
+            nx, ny = -vx, -vy
+        else:
+            nx, ny = random.uniform(-1,1), random.uniform(-1,1)
+
+        nx, ny = normalize((nx, ny))
+        new_x = clamp(agent.pos[0] + nx * retreat_distance, 0, WORLD_W)
+        new_y = clamp(agent.pos[1] + ny * retreat_distance, 0, WORLD_H)
+        agent.pos = (new_x, new_y)
+        # optionally mark local_map around as DANGER in agent's belief
+        try:
+            ci, cj = cell_of_pos(agent.pos)
+            agent.local_map[cj, ci] = DANGER
+        except Exception:
+            pass
+        return
+
 
     def send_map_patch(self, comms, targets, now_time, radius=None):
         """向 targets 发送本地地图的补丁（稀疏表示）"""
@@ -362,6 +453,21 @@ class AgentBase:
         msg = {'type':'map_patch', 'from':self.id, 'patch':patch, 'pos':self.pos}
         for t in targets:
             comms.send(self, t, msg, now_time)
+
+    def execute_retreat(self):
+        """简单的避险策略：反方向退后一定距离"""
+        vx, vy = -self.vel[0], -self.vel[1]
+        self.pos = (self.pos[0] + vx*5, self.pos[1] + vy*5)
+
+    def request_aid(self, env):
+        """上报死亡/求援信息"""
+        msg = {'type':'death_report', 'from': self.id, 'pos': self.pos}
+        for a in env.agents:
+            if a != self and distance(a.pos, self.pos) < 200:
+                a.handle_death_report(msg)
+
+
+
 
     def draw_hist(self, screen, color=(100,100,255)):
         if len(self.hist) >= 2:
@@ -424,14 +530,16 @@ class LargeAgent(AgentBase):
     def __init__(self, id_, x, y, is_brain=False, behavior=None ,multi_behavior=None):
         super().__init__(id_, x, y, sensor_range=SENSOR_LARGE, is_large=True, behavior=behavior)
         self.last_reason_time = time.time()
+        self.brain_reason_time = time.time()
         self.known_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
         # self.local_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
-        self.assigned = {}  # agent_id -> waypoint
+        # self.assigned = {}  # agent_id -> waypoint
         self.is_brain = is_brain  # LargeAgent作为脑节点
         if multi_behavior is not None:
             self.multi_behavior = multi_behavior
         else:
             self.multi_behavior = easyFrontierAssignmentBehavior()
+        self.brain_planner = BrainGlobalPlanner()
 
     def integrate_map_patch(self, patch):
         """将收到的patch应用到自己的known_map"""
@@ -458,6 +566,15 @@ class LargeAgent(AgentBase):
         for i,j in zip(inds[0].tolist(), inds[1].tolist()):
             self.known_map[i,j] = self.local_map[i,j]
 
+    def brain_reason_and_assign(self, agents, now_time):
+        # brain node: global planning
+        if now_time - self.last_reason_time < BRAIN_REASON_INTERVAL:
+            return
+        self.last_reason_time = now_time
+        self.fuse_own_sensing()
+        assigns = self.brain_planner.decide(self, agents)
+        return assigns
+
     def reason_and_assign(self, agents, now_time):
         if now_time - self.last_reason_time < BRAIN_REASON_INTERVAL:
             return
@@ -467,6 +584,50 @@ class LargeAgent(AgentBase):
         # assign frontiers
         assigns = self.multi_behavior.decide(self, agents)
         return assigns
+
+    
+# ===============================
+
+    def _agent_request_aid(agent, world, emergency_type='aid'):
+        """
+        小大节点请求援助的默认实现：发送 message 给其所属 brain node (if known) or broadcast
+        msg format: {'type': 'AID_REQUEST', 'from': agent.id, 'pos': agent.pos, 'urgency': value, 'reason': ...}
+        """
+        msg = {'type':'AID_REQUEST', 'from': agent.id, 'pos': agent.pos, 'urgency': 1.0, 'reason': emergency_type}
+        # if agent has father_id / known brain: try to send to brain
+        target = None
+        if getattr(agent, 'father_id', None) is not None:
+            # find brain in world.large_agents list
+            for la in world.large_agents:
+                if la.id == agent.father_id:
+                    target = la
+                    break
+        if target is None:
+            # fallback: send to brain id in world if available
+            if getattr(world, 'brain_id', None) is not None:
+                try:
+                    target = world.large_agents[world.brain_id]
+                except Exception:
+                    target = None
+        # use world.communication if provided; else directly call handler
+        if target is not None:
+            try:
+                world_comms = getattr(world, 'comms', None)
+                if world_comms is not None:
+                    world_comms.send(agent, target, msg, world.time)
+            except Exception:
+                pass
+        else:
+            # broadcast to all large agents
+            for la in world.large_agents:
+                try:
+                    if getattr(world, 'comms', None):
+                        world.comms.send(agent, la, msg, world.time)
+                except Exception:
+                    pass
+        return
+
+#  ===============================
 
     def draw_self(self, screen):
         if self.is_brain:
@@ -485,5 +646,12 @@ class LargeAgent(AgentBase):
             surf = pygame.Surface((AGENT_COMM_RANGE*2, AGENT_COMM_RANGE*2), pygame.SRCALPHA)
             pygame.draw.circle(surf, (200,160,60,30), (AGENT_COMM_RANGE, AGENT_COMM_RANGE), AGENT_COMM_RANGE)
             screen.blit(surf, (x-AGENT_COMM_RANGE, y-AGENT_COMM_RANGE))
+
+
+
+
+
+
+
 
 
