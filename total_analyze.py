@@ -6,7 +6,7 @@ import numpy as np
 # ----------------------------
 # 配置路径
 # ----------------------------
-# json_folder = "./base1json/未知危险环境base图"  # JSON 文件所在文件夹
+# json_folder = "./experiment_results/base重测"  # JSON 文件所在文件夹
 json_folder = "./simulation_results"  # JSON 文件所在文件夹
 json_files = glob.glob(os.path.join(json_folder, "*.json"))
 

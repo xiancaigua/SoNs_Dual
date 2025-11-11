@@ -3,17 +3,17 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 
-# -------------------------------
-# 配置参数
-# -------------------------------
+# =====================================================
+#                参数配置
+# =====================================================
 # RESULTS_DIR = "simulation_results"   # 存放JSON的目录
-RESULTS_DIR = "base1json/未知危险环境base图"   # 存放JSON的目录
+RESULTS_DIR = "experiment_results/base重测"   # 存放JSON的目录
 NUM_SCENES = 10                      # 场景数量
-FILES_PER_SCENE = 10                 # 每个场景的文件数
+FILES_PER_SCENE = 10                 # 每个场景的实验次数
 
-# -------------------------------
-# 工具函数
-# -------------------------------
+# =====================================================
+#                工具函数
+# =====================================================
 def load_json_files(folder):
     """加载指定文件夹下的前100个JSON文件"""
     files = sorted([f for f in os.listdir(folder) if f.endswith(".json")])
@@ -29,124 +29,168 @@ def load_json_files(folder):
     print(f"✅ 成功加载 {len(data)} 个文件")
     return data
 
-
-# -------------------------------
-# 主分析逻辑
-# -------------------------------
+# =====================================================
+#                总体分析
+# =====================================================
 def analyze_overall(data):
-    """总体概览统计"""
-    all_alive_rates, all_traj_lengths = [], []
+    """总体数据统计"""
+    alive_rates, traj_lengths, coverages, success_flags, durations = [], [], [], [], []
 
     for record in data:
         stat = record["statistics"]
         agents = record["agent_details"]["small_agents"]
 
-        # ✅ 每个实验的存活率
-        if stat["total_small_agents"] > 0:
-            alive_rate = stat["alive_small_agents"] / 6
-            # alive_rate = stat["alive_small_agents"] / stat["total_small_agents"]
-            all_alive_rates.append(alive_rate)
+        # ✅ 综合生存率（大小机器人加权）
+        total_small = stat["total_small_agents"]
+        total_large = stat["total_large_agents"]
+        alive_small = stat["alive_small_agents"]
+        alive_large = stat["alive_large_agents"]
 
-        # 所有小机器人的轨迹长度
-        traj_lengths = [a["trajectory_length"] for a in agents]
-        all_traj_lengths.extend(traj_lengths)
+        total_equiv = total_small + 2 * total_large
+        alive_equiv = alive_small + 2 * alive_large
+        if total_equiv > 0:
+            alive_rates.append(alive_equiv / total_equiv)
+
+        # ✅ 覆盖率
+        coverages.append(stat["coverage_percentage"])
+
+        # ✅ 轨迹长度
+        traj_lengths.extend([a["trajectory_length"] for a in agents])
+
+        # ✅ 成功率
+        success_flags.append(1 if stat["victim_rescued"] else 0)
+
+        # ✅ 耗时
+        durations.append(stat["simulation_duration"])
 
     print("\n=== 🌍 总体统计 ===")
-    print(f"平均存活率: {np.mean(all_alive_rates):.3f} (方差={np.var(all_alive_rates):.4f})")
-    print(f"轨迹长度平均: {np.mean(all_traj_lengths):.1f}, 方差: {np.var(all_traj_lengths):.1f}")
-    return all_alive_rates, all_traj_lengths
+    print(f"平均生存率: {np.mean(alive_rates):.3f} (方差={np.var(alive_rates):.4f})")
+    print(f"平均探索覆盖率: {np.mean(coverages):.2f}% (方差={np.var(coverages):.2f})")
+    print(f"平均轨迹长度: {np.mean(traj_lengths):.1f} (方差={np.var(traj_lengths):.1f})")
+    print(f"总体成功率: {np.mean(success_flags):.3f}")
+    print(f"平均耗时: {np.mean(durations):.2f}s (方差={np.var(durations):.2f})")
 
+    return alive_rates, traj_lengths, coverages, success_flags, durations
 
+# =====================================================
+#                场景分析
+# =====================================================
 def analyze_by_scene(data):
-    """按场景统计 (平均存活率 + 方差, 平均轨迹长度 + 方差)"""
+    """逐场景分析：平均生存率、轨迹长度、覆盖率、成功率、耗时 + 方差"""
     scene_stats = []
 
     for i in range(NUM_SCENES):
         scene_data = data[i*FILES_PER_SCENE:(i+1)*FILES_PER_SCENE]
 
-        # ✅ 每个实验一个存活率
-        exp_alive_rates = []
-        traj_lengths_all = []
+        alive_rates, traj_lengths, coverages, success_flags, durations = [], [], [], [], []
 
         for record in scene_data:
             stat = record["statistics"]
             agents = record["agent_details"]["small_agents"]
 
-            # 每次实验一个存活率
-            if stat["total_small_agents"] > 0:
-                exp_alive_rates.append(stat["alive_small_agents"] / 6)
-                # exp_alive_rates.append(stat["alive_small_agents"] / stat["total_small_agents"])
+            # ✅ 生存率（大小机器人加权）
+            total_small = stat["total_small_agents"]
+            total_large = stat["total_large_agents"]
+            alive_small = stat["alive_small_agents"]
+            alive_large = stat["alive_large_agents"]
 
-            # 所有小机器人轨迹长度
-            traj_lengths_all += [a["trajectory_length"] for a in agents]
+            total_equiv = total_small + 2 * total_large
+            alive_equiv = alive_small + 2 * alive_large
+            if total_equiv > 0:
+                alive_rates.append(alive_equiv / total_equiv)
 
-        mean_alive = np.mean(exp_alive_rates)
-        var_alive = np.var(exp_alive_rates)
-        mean_traj = np.mean(traj_lengths_all)
-        var_traj = np.var(traj_lengths_all)
+            # ✅ 覆盖率
+            coverages.append(stat["coverage_percentage"])
 
-        scene_stats.append((mean_alive, var_alive, mean_traj, var_traj))
+            # ✅ 轨迹长度
+            traj_lengths += [a["trajectory_length"] for a in agents]
+
+            # ✅ 成功率
+            success_flags.append(1 if stat["victim_rescued"] else 0)
+
+            # ✅ 耗时
+            durations.append(stat["simulation_duration"])
+
+        # 汇总
+        mean_alive, var_alive = np.mean(alive_rates), np.var(alive_rates)
+        mean_traj, var_traj = np.mean(traj_lengths), np.var(traj_lengths)
+        mean_cov, var_cov = np.mean(coverages), np.var(coverages)
+        success_rate = np.mean(success_flags)
+        mean_time, var_time = np.mean(durations), np.var(durations)
+
+        scene_stats.append((mean_alive, var_alive,
+                            mean_traj, var_traj,
+                            mean_cov, var_cov,
+                            success_rate,
+                            mean_time, var_time))
 
         print(f"\n--- 场景 {i+1} ---")
-        print(f"平均存活率: {mean_alive:.3f} (方差={var_alive:.4f})")
+        print(f"平均生存率: {mean_alive:.3f} (方差={var_alive:.4f})")
         print(f"平均轨迹长度: {mean_traj:.1f} (方差={var_traj:.1f})")
+        print(f"平均覆盖率: {mean_cov:.2f}% (方差={var_cov:.2f})")
+        print(f"成功率: {success_rate:.2f}")
+        print(f"平均耗时: {mean_time:.2f}s (方差={var_time:.2f})")
 
     return scene_stats
 
-
-# -------------------------------
-# 绘图逻辑
-# -------------------------------
+# =====================================================
+#                绘图函数
+# =====================================================
 def plot_scene_stats(scene_stats, save_dir="analysis_results"):
-    """绘制每个场景的统计图（包含方差标注）"""
     os.makedirs(save_dir, exist_ok=True)
     scenes = np.arange(1, NUM_SCENES + 1)
+
     mean_alive = [s[0] for s in scene_stats]
     var_alive = [s[1] for s in scene_stats]
     mean_traj = [s[2] for s in scene_stats]
     var_traj = [s[3] for s in scene_stats]
+    mean_cov = [s[4] for s in scene_stats]
+    var_cov = [s[5] for s in scene_stats]
+    success_rate = [s[6] for s in scene_stats]
+    mean_time = [s[7] for s in scene_stats]
+    var_time = [s[8] for s in scene_stats]
 
-    # ========== 图1：平均存活率 + 方差 ==========
+    def _plot_bar_with_var(values, variances, title, ylabel, color, filename, unit=""):
+        plt.figure(figsize=(8, 4))
+        bars = plt.bar(scenes, values, yerr=np.sqrt(variances),
+                       color=color, alpha=0.8, capsize=5, ecolor='black')
+        plt.title(title, fontsize=14)
+        plt.xlabel("Scene ID")
+        plt.ylabel(ylabel)
+        plt.xticks(scenes)
+        for bar, mean, var in zip(bars, values, variances):
+            plt.text(bar.get_x() + bar.get_width()/2, mean + np.sqrt(var) + 0.02*max(values),
+                     f"σ²={var:.2f}{unit}", ha="center", va="bottom", fontsize=9, color='darkred')
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, filename), dpi=200)
+        plt.close()
+
+    # 各类统计图
+    _plot_bar_with_var(mean_alive, var_alive, "Average Survival Rate per Scene", "Survival Rate", "#4CAF50", "scene_survival_rate.png")
+    _plot_bar_with_var(mean_cov, var_cov, "Average Coverage per Scene (%)", "Coverage (%)", "#FF9800", "scene_coverage.png")
+    _plot_bar_with_var(mean_traj, var_traj, "Average Trajectory Length per Scene", "Trajectory Length", "#2196F3", "scene_trajectory.png")
+    _plot_bar_with_var(mean_time, var_time, "Average Simulation Time per Scene", "Time (s)", "#9E9E9E", "scene_simulation_time.png", unit="s²")
+
+    # 成功率
     plt.figure(figsize=(8, 4))
-    bars = plt.bar(scenes, mean_alive, color="#4CAF50", alpha=0.8,
-                   yerr=np.sqrt(var_alive), capsize=5, ecolor='black')
-    plt.title("Average Survival Rate per Scene (with Variance)", fontsize=14)
-    plt.xlabel("Scene ID", fontsize=12)
-    plt.ylabel("Mean Survival Rate", fontsize=12)
+    bars = plt.bar(scenes, success_rate, color="#9C27B0", alpha=0.8)
+    plt.title("Rescue Success Rate per Scene", fontsize=14)
+    plt.xlabel("Scene ID")
+    plt.ylabel("Success Rate")
     plt.ylim(0, 1.1)
     plt.xticks(scenes)
-
-    # for bar, mean, var in zip(bars, mean_alive, var_alive):
-    #     plt.text(bar.get_x() + bar.get_width()/2, mean + np.sqrt(var) + 0.02,
-    #              f"{var:.2f}", ha="center", va="bottom", fontsize=9, color='darkred')
-
+    for bar, val in zip(bars, success_rate):
+        plt.text(bar.get_x() + bar.get_width()/2, val + 0.02,
+                 f"{val:.2f}", ha="center", va="bottom", fontsize=10, color='black')
     plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, "scene_survival_rate_variance.png"), dpi=200)
-    plt.close()
-
-    # ========== 图2：平均轨迹长度 + 方差 ==========
-    plt.figure(figsize=(8, 4))
-    bars = plt.bar(scenes, mean_traj, color="#2196F3", alpha=0.8,
-                   yerr=np.sqrt(var_traj), capsize=5, ecolor='black')
-    plt.title("Average Trajectory Length per Scene (with Variance)", fontsize=14)
-    plt.xlabel("Scene ID", fontsize=12)
-    plt.ylabel("Mean Trajectory Length", fontsize=12)
-    plt.xticks(scenes)
-
-    # for bar, mean, var in zip(bars, mean_traj, var_traj):
-    #     plt.text(bar.get_x() + bar.get_width()/2, mean + np.sqrt(var) + 5,
-    #              f"{var:.1f}", ha="center", va="bottom", fontsize=9, color='darkred')
-
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, "scene_traj_length_variance.png"), dpi=200)
+    plt.savefig(os.path.join(save_dir, "scene_success_rate.png"), dpi=200)
     plt.close()
 
     print(f"\n📊 图表已保存到: {save_dir}")
 
-
-# -------------------------------
-# 主执行
-# -------------------------------
+# =====================================================
+#                主执行逻辑
+# =====================================================
 if __name__ == "__main__":
     data = load_json_files(RESULTS_DIR)
     analyze_overall(data)

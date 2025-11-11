@@ -2,7 +2,7 @@
 # 参数配置（可以调整）
 # -----------------------------
 VISUALIZE = True  # 设置为 False 时禁用可视化
-BASELINE = True  # 使用基线智能体
+BASELINE = False  # 使用基线智能体
 
 SCREEN_W, SCREEN_H = 1000, 700
 WORLD_W, WORLD_H = SCREEN_W, SCREEN_H

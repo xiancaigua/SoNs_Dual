@@ -888,27 +888,6 @@ class BrainGlobalPlanner(Multi_Behavior):
                 by = int(y // self.cluster_eps)
                 bins.setdefault((bx,by),[]).append((x,y))
             return [np.array(v) for v in bins.values()]
-    
-    # def cluster_frontiers(self, frontiers):
-    #     """
-    #     使用DBSCAN对前沿点进行聚类
-    #     每个簇代表一个潜在探索区域
-    #     """
-    #     if len(frontiers) == 0:
-    #         return []
-
-    #     # DBSCAN聚类
-    #     clustering = DBSCAN(eps=self.eps, min_samples=self.min_samples).fit(frontiers)
-    #     labels = clustering.labels_
-
-    #     clusters = []
-    #     for label in set(labels):
-    #         if label == -1:  # 噪声点跳过
-    #             continue
-    #         cluster_points = frontiers[labels == label]
-    #         clusters.append(cluster_points)
-
-    #     return clusters
 
     # =====================================================
     # 计算每个簇的中心点
@@ -1020,13 +999,14 @@ class InformedLocalAssignmentBehavior(Multi_Behavior):
 
         for _ in range(self.num_samples * 3):  # 适当放宽采样次数，以免半圆过滤太多
             ang = np.random.uniform(0, 2 * np.pi)
-            r = np.random.uniform(0.3 * self.sample_radius, self.sample_radius)
+            r = np.random.uniform(0.5 * self.sample_radius, self.sample_radius)
             dx = r * np.cos(ang)
             dy = r * np.sin(ang)
             candidate = np.array([int(goal_pos[0] + dx), int(goal_pos[1] + dy)])
-
+            candidate_dir =  candidate - goal_pos
+            candidate_dir = candidate_dir / np.linalg.norm(candidate_dir + 1e-6)
             # ✅ 判断是否在“目标方向半圆”内：点积 > 0 表示锐角
-            if np.dot(candidate - large_pos, goal_dir) <= 0:
+            if np.dot(candidate_dir, goal_dir) < 0:
                 continue
 
             # ✅ 转格子坐标
@@ -1098,7 +1078,123 @@ class InformedLocalAssignmentBehavior(Multi_Behavior):
 
 
 
+class FormationAssignmentBehavior(Multi_Behavior):
+    """
+    编队式局部任务分配行为
+    ------------------------------------------------
+    功能：
+      - 根据 formation_type 生成编队形状；
+      - 自动在大节点目标方向上布置子节点位置；
+      - 通过匈牙利算法匹配小节点；
+      - 大节点自身后撤到安全位置。
+    """
 
+    def __init__(self, formation_type="vshape", spacing=30, retreat_ratio=0.85):
+        self.formation_type = formation_type
+        self.spacing = spacing              # 子节点间的间距
+        self.retreat_ratio = retreat_ratio  # 大节点后撤比例
+        self.last_assignment = {}
+
+    # =====================================================
+    # 主接口
+    # =====================================================
+    def decide(self, large_agent, sub_agents):
+        if large_agent.goal is None:
+            return {a.id: None for a in sub_agents}
+
+        large_pos = np.array(large_agent.pos)
+        goal_pos = np.array(large_agent.goal)
+        direction = goal_pos - large_pos
+        if np.linalg.norm(direction) < 1e-6:
+            return {a.id: None for a in sub_agents}
+
+        direction = direction / np.linalg.norm(direction)
+        perpendicular = np.array([-direction[1], direction[0]])  # 垂直方向
+
+        # 1️⃣ 生成编队目标点（相对位置）
+        formation_points = self.generate_formation_points(
+            center=goal_pos,
+            direction=direction,
+            perpendicular=perpendicular,
+            num_agents=len(sub_agents)
+        )
+
+        # 2️⃣ 匈牙利分配
+        cost_matrix = np.zeros((len(sub_agents), len(formation_points)))
+        for i, ag in enumerate(sub_agents):
+            for j, g in enumerate(formation_points):
+                cost_matrix[i, j] = np.linalg.norm(np.array(ag.pos) - np.array(g))
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+
+        assignments = {}
+        for i, ag in enumerate(sub_agents):
+            if i in row_ind:
+                j = col_ind[np.where(row_ind == i)[0][0]]
+                assignments[ag.id] = formation_points[j]
+            else:
+                assignments[ag.id] = None
+
+        self.last_assignment = assignments
+
+        # 3️⃣ 大节点目标后移（保持安全）
+        large_agent.goal = self.recede_large_goal(large_pos, goal_pos)
+
+        return assignments
+
+    # =====================================================
+    # 编队点生成逻辑
+    # =====================================================
+    def generate_formation_points(self, center, direction, perpendicular, num_agents):
+        """根据 formation_type 生成相对布局"""
+        points = []
+
+        if self.formation_type == "line":
+            # ---- 沿目标方向排成一条直线 ----
+            for i in range(num_agents):
+                offset = direction * (i + 1) * self.spacing
+                points.append(center + offset)
+
+        elif self.formation_type == "vshape":
+            # ---- V形编队（左右分散）----
+            for i in range(num_agents):
+                side = 1 if i % 2 == 0 else -1
+                layer = (i // 2 + 1)
+                offset = direction * layer * self.spacing + perpendicular * side * layer * self.spacing * 0.7
+                points.append(center + offset)
+
+        elif self.formation_type == "circle":
+            # ---- 环形编队 ----
+            radius = self.spacing * max(2, num_agents / (2 * np.pi))
+            for i in range(num_agents):
+                angle = 2 * np.pi * i / num_agents
+                dx = radius * np.cos(angle)
+                dy = radius * np.sin(angle)
+                points.append(center + np.array([dx, dy]))
+
+        elif self.formation_type == "wedge":
+            # ---- 扇形编队（更开阔）----
+            for i in range(num_agents):
+                theta = np.deg2rad(-45 + 90 * (i / max(1, num_agents - 1)))
+                rot = np.array([
+                    [np.cos(theta), -np.sin(theta)],
+                    [np.sin(theta), np.cos(theta)]
+                ])
+                offset = rot.dot(direction) * self.spacing * 2
+                points.append(center + offset * (i + 1) / 2)
+
+        else:
+            raise ValueError(f"❌ Unknown formation type: {self.formation_type}")
+
+        return points
+
+    # =====================================================
+    # 安全性调整（后撤）
+    # =====================================================
+    def recede_large_goal(self, large_pos, goal_pos):
+        dx, dy = goal_pos[0] - large_pos[0], goal_pos[1] - large_pos[1]
+        new_gx = large_pos[0] + dx * self.retreat_ratio
+        new_gy = large_pos[1] + dy * self.retreat_ratio
+        return (new_gx, new_gy)
 
 
 

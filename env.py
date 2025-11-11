@@ -179,7 +179,7 @@ class World:
 
                 la = LargeAgent(
                     i, x, y,
-                    multi_behavior=ERRTFrontierAssignmentBehavior(),
+                    multi_behavior=FormationAssignmentBehavior(),
                     behavior=PathPlanningBehavior()
                 )
                 self.large_agents.append(la)
@@ -209,14 +209,14 @@ class World:
 
                     if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
                         self.large_agents.append(LargeAgent(i, x, y,\
-                                                            multi_behavior=ERRTFrontierAssignmentBehavior(),
+                                                            multi_behavior=FormationAssignmentBehavior(),
                                                             behavior=PathPlanningBehavior()))
                         break
                 else:
                     # 如果找不到合适位置，则直接使用base_pos附近
                     self.large_agents.append(LargeAgent(i, base_pos[0] + random.uniform(-10, 10),
                                                         base_pos[1] + random.uniform(-10, 10),
-                                                        multi_behavior=ERRTFrontierAssignmentBehavior(),
+                                                        multi_behavior=FormationAssignmentBehavior(),
                                                         behavior=PathPlanningBehavior()))
         if self.large_agents:
             brain_node = min(self.large_agents, key=lambda a: a.id)
