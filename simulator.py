@@ -22,11 +22,11 @@ def main(rounds=1):
     if SEED is not None:
         random.seed(SEED)
         np.random.seed(SEED)
+    pygame.init()
+    clock = pygame.time.Clock()
     if VISUALIZE:
-        pygame.init()
         screen = pygame.display.set_mode((SCREEN_W + 400, SCREEN_H))
         pygame.display.set_caption("exploration simulation")
-        clock = pygame.time.Clock()
         font = load_font()
 
     # communication system
@@ -65,7 +65,10 @@ def main(rounds=1):
                     elif event.key == pygame.K_s:  # 手动保存截图
                         save_simulation_screenshot(screen, world, sim_time, "manual")
         if not paused:
-            world.update_baseline_with_sons_arch(dt, comms, now_time)
+            if BASELINE:
+                world.update_baseline(dt, comms, now_time)
+            else:
+                world.update(dt, comms, now_time)
 
         # 绘制（仅在可视化模式下启用）
         if VISUALIZE:
@@ -133,7 +136,7 @@ def main(rounds=1):
     else:
         screenshot_path = None
     # 保存JSON总结
-    json_filename = save_simulation_summary(world, sim_time, simulation_result, screenshot_path)
+    json_filename = save_simulation_summary(world, sim_time, simulation_result, screenshot_path, (1 + rounds//10))
 
     # 可选：在控制台显示JSON文件路径
     if json_filename:
@@ -143,6 +146,6 @@ def main(rounds=1):
 
 
 if __name__ == "__main__":
-    for i in range(200): 
+    for i in range(120): 
         main(i)
     sys.exit(0)

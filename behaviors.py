@@ -98,7 +98,7 @@ class PathPlanningBehavior(Behavior):
       - 随机探索时仍考虑危险与障碍的安全避让
     """
 
-    def __init__(self, replan_interval=0.5, goal_tolerance=10.0):
+    def __init__(self, replan_interval=1, goal_tolerance=10.0):
         super().__init__()
         self.replan_interval = replan_interval
         self.goal_tolerance = goal_tolerance
@@ -938,14 +938,14 @@ class InformedLocalAssignmentBehavior(Multi_Behavior):
     """
 
     def __init__(self,
-                 sample_radius=30,
+                 sample_radius=40,
                  num_samples=50,
                  num_selected=12,
                  safe_margin=20,
                  sensor_range=6.0,
                  w_gain=2.0,
-                 w_large_dist=1.0,
-                 w_goal_dist=1.0,
+                 w_large_dist=0.5,
+                 w_goal_dist=0.1,
                  retreat_ratio=0.85):
         self.sample_radius = sample_radius      # 采样半径
         self.num_samples = num_samples          # 采样候选数量
@@ -1008,18 +1008,39 @@ class InformedLocalAssignmentBehavior(Multi_Behavior):
     # 候选点采样
     # =====================================================
     def sample_candidates(self, global_map, large_pos, goal_pos):
-        """在局部区域随机采样若干候选点"""
-        cx, cy = goal_pos
+        """
+        在大节点当前位置为圆心、指向目标方向的半圆区域采样
+        """
         candidates = []
-        for _ in range(self.num_samples):
+        goal_dir = np.array(goal_pos) - np.array(large_pos)
+        if np.linalg.norm(goal_dir) < 1e-6:
+            return []  # 目标方向无效
+
+        goal_dir = goal_dir / np.linalg.norm(goal_dir)  # 单位化方向
+
+        for _ in range(self.num_samples * 3):  # 适当放宽采样次数，以免半圆过滤太多
             ang = np.random.uniform(0, 2 * np.pi)
             r = np.random.uniform(0.3 * self.sample_radius, self.sample_radius)
-            x = int(cx + r * np.cos(ang))
-            y = int(cy + r * np.sin(ang))
-            i,j = cell_of_pos((x, y))
-            if 0 <= i < global_map.shape[1] and 0 <= j < global_map.shape[0]:
-                if self.is_point_safe(global_map, (i, j)):
-                    candidates.append((x, y))
+            dx = r * np.cos(ang)
+            dy = r * np.sin(ang)
+            candidate = np.array([int(goal_pos[0] + dx), int(goal_pos[1] + dy)])
+
+            # ✅ 判断是否在“目标方向半圆”内：点积 > 0 表示锐角
+            if np.dot(candidate - large_pos, goal_dir) <= 0:
+                continue
+
+            # ✅ 转格子坐标
+            i, j = cell_of_pos(candidate)
+            if not (0 <= i < global_map.shape[1] and 0 <= j < global_map.shape[0]):
+                continue
+
+            # ✅ 检查安全
+            if self.is_point_safe(global_map, (i, j)):
+                candidates.append(tuple(candidate))
+
+            if len(candidates) >= self.num_samples:
+                break
+
         return candidates
 
     def is_point_safe(self, global_map, point):

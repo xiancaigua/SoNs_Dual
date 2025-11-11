@@ -2,6 +2,7 @@
 # 参数配置（可以调整）
 # -----------------------------
 VISUALIZE = True  # 设置为 False 时禁用可视化
+BASELINE = True  # 使用基线智能体
 
 SCREEN_W, SCREEN_H = 1000, 700
 WORLD_W, WORLD_H = SCREEN_W, SCREEN_H
@@ -19,8 +20,8 @@ GRID_H = WORLD_H // GRID_CELL
 AGENT_RADIUS = 6
 LARGE_RADIUS = 10
 
-SENSOR_SMALL = 70
-SENSOR_LARGE = 150
+SENSOR_SMALL = 30
+SENSOR_LARGE = 100
 
 AGENT_MAX_SPEED = 60.0  # pixels per second
 BRAIN_REASON_INTERVAL = 4.0  # seconds

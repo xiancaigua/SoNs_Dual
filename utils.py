@@ -69,48 +69,49 @@ def save_simulation_screenshot(screen, world, sim_time, result):
 def create_summary_image(screen, world, sim_time, result, font):
     """创建包含统计信息的总结图像"""
     # 创建稍大的表面来容纳更多信息
-    summary_surface = pygame.Surface((SCREEN_W, SCREEN_H + 200))
+    summary_surface = pygame.Surface((SCREEN_W, SCREEN_H))
+    # summary_surface = pygame.Surface((SCREEN_W, SCREEN_H + 200))
     summary_surface.fill((240, 240, 240))  # 浅灰色背景
     
     # 复制当前屏幕内容
     summary_surface.blit(screen, (0, 0))
     
-    # 添加详细的统计信息区域
-    info_y = SCREEN_H + 10
+    # # 添加详细的统计信息区域
+    # info_y = SCREEN_H + 10
     
-    # 标题
-    title_text = f"仿真总结 - {result}"
-    title_surf = font.render(title_text, True, (0, 0, 0))
-    summary_surface.blit(title_surf, (20, info_y))
+    # # 标题
+    # title_text = f"仿真总结 - {result}"
+    # title_surf = font.render(title_text, True, (0, 0, 0))
+    # summary_surface.blit(title_surf, (20, info_y))
     
-    # 基本信息
-    info_lines = [
-        f"仿真时间: {sim_time:.2f}秒",
-        f"地图覆盖率: {world.coverage_percentage():.2f}%",
-        f"幸存小型机器人: {sum(1 for a in world.agents if a.alive)}/{len(world.agents)}",
-        f"幸存大型机器人: {sum(1 for la in world.large_agents if la.alive)}/{len(world.large_agents)}",
-        f"受害者状态: {'已救援' if world.victim.rescued else '未找到'}",
-        f"障碍物数量: {len(world.obstacles)}",
-        f"危险区域: {len(world.danger_zones)}"
-    ]
+    # # 基本信息
+    # info_lines = [
+    #     f"仿真时间: {sim_time:.2f}秒",
+    #     f"地图覆盖率: {world.coverage_percentage():.2f}%",
+    #     f"幸存小型机器人: {sum(1 for a in world.agents if a.alive)}/{len(world.agents)}",
+    #     f"幸存大型机器人: {sum(1 for la in world.large_agents if la.alive)}/{len(world.large_agents)}",
+    #     f"受害者状态: {'已救援' if world.victim.rescued else '未找到'}",
+    #     f"障碍物数量: {len(world.obstacles)}",
+    #     f"危险区域: {len(world.danger_zones)}"
+    # ]
     
-    for i, line in enumerate(info_lines):
-        text_surf = font.render(line, True, (0, 0, 0))
-        summary_surface.blit(text_surf, (20, info_y + 30 + i * 25))
+    # for i, line in enumerate(info_lines):
+    #     text_surf = font.render(line, True, (0, 0, 0))
+    #     summary_surface.blit(text_surf, (20, info_y + 30 + i * 25))
     
-    # 机器人轨迹信息
-    traj_y = info_y + 30 + len(info_lines) * 25 + 10
-    traj_title = font.render("机器人轨迹长度:", True, (0, 0, 0))
-    summary_surface.blit(traj_title, (20, traj_y))
+    # # 机器人轨迹信息
+    # traj_y = info_y + 30 + len(info_lines) * 25 + 10
+    # traj_title = font.render("机器人轨迹长度:", True, (0, 0, 0))
+    # summary_surface.blit(traj_title, (20, traj_y))
     
-    for i, agent in enumerate(world.agents[:5]):  # 显示前5个机器人的信息
-        traj_info = f"机器人 {agent.id}: 轨迹点{len(agent.hist)}个"
-        traj_surf = font.render(traj_info, True, (0, 0, 0))
-        summary_surface.blit(traj_surf, (40, traj_y + 25 + i * 20))
+    # for i, agent in enumerate(world.agents[:5]):  # 显示前5个机器人的信息
+    #     traj_info = f"机器人 {agent.id}: 轨迹点{len(agent.hist)}个"
+    #     traj_surf = font.render(traj_info, True, (0, 0, 0))
+    #     summary_surface.blit(traj_surf, (40, traj_y + 25 + i * 20))
     
     return summary_surface
 
-def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=None):
+def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=None, map_id=None):
     """
     将仿真结果保存为JSON文件
     
@@ -131,8 +132,8 @@ def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=
     filename = f"{results_dir}/sim_summary_{timestamp}.json"
     
     # 收集基本统计信息
-    alive_small = sum(1 for a in world.agents if a.alive)
-    alive_large = sum(1 for la in world.large_agents if la.alive)
+    alive_small = len(world.agents)
+    alive_large = len(world.large_agents)
     
     # 构建JSON数据结构
     summary_data = {
@@ -145,9 +146,10 @@ def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=
         "statistics": {
             "simulation_duration": sim_time,
             "alive_small_agents": alive_small,
-            "total_small_agents": len(world.agents),
+            "total_small_agents": NUM_AGENTS,
             "alive_large_agents": alive_large,
-            "total_large_agents": len(world.large_agents),
+            "total_large_agents": NUM_LARGE,
+            "map_id": map_id,
             "coverage_percentage": world.coverage_percentage(),
             "victim_rescued": world.victim.rescued,
             "obstacles_count": len(world.obstacles),
@@ -160,24 +162,24 @@ def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=
     }
     
     # 收集小型机器人详细信息
-    for agent in world.agents:
+    for agent in world.agents + world.wasted_agents:
         agent_info = {
             "id": agent.id,
             "alive": agent.alive,
-            "final_position": agent.pos,
+            "final_position": [int(a) for a in agent.pos],
             "trajectory_length": len(agent.hist),
             "explored_cells": len(agent.get_local_explored_cells()),
             "has_goal": agent.has_goal,
-            "goal_position": agent.goal if agent.has_goal else None
+            "goal_position": [int(a) for a in agent.goal] if agent.goal is not None else None
         }
         summary_data["agent_details"]["small_agents"].append(agent_info)
     
     # 收集大型机器人详细信息
-    for large_agent in world.large_agents:
+    for large_agent in world.large_agents + world.wasted_large_agents:
         large_agent_info = {
             "id": large_agent.id,
             "alive": large_agent.alive,
-            "final_position": large_agent.pos,
+            "final_position": [int(a) for a in large_agent.pos],
             "trajectory_length": len(large_agent.hist),
             "known_cells": int(np.sum(large_agent.known_map != UNKNOWN)),
             "total_cells": large_agent.known_map.size,

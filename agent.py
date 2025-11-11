@@ -55,7 +55,6 @@ class oldAgentBase:
         return {'near_obstacles': near_obstacles, 'near_dangers': near_dangers, 'victim_seen': victim_seen}
 
     def update_local_map_from_sensing(self, env):
-        """基于当前传感器范围写入 local_map（仅在视野内将真实世界写入local_map）"""
         cx, cy = int(self.pos[0]), int(self.pos[1])
         r = int(self.sensor_range)
         min_i = max(0, (cx - r)//GRID_CELL)
@@ -65,10 +64,18 @@ class oldAgentBase:
         for i in range(min_i, max_i+1):
             for j in range(min_j, max_j+1):
                 gx, gy = pos_of_cell(i, j)
+                if self.local_map[j, i] != UNKNOWN: # 只更新未知区域
+                    continue
                 if math.hypot(gx - cx, gy - cy) <= r:
-                    # sample world truth
                     val = env.ground_grid[j, i]
-                    self.local_map[j, i] = val
+                    # ✅ 不写入危险区，只写障碍物或可通行
+                    if val == OBSTACLE:
+                        self.local_map[j, i] = OBSTACLE
+                    elif val == FREE or val == VICTIM:
+                        self.local_map[j, i] = val
+                    elif val == DANGER:
+                        # 如果是 DANGER → 留FREE，没法成功探测出来
+                        self.local_map[j, i] = FREE
 
     def get_local_explored_cells(self):
         """返回该agent已探索（非UNKNOWN）的格子集合（i,j）"""
@@ -102,7 +109,6 @@ class oldAgentBase:
                 elif not obs.rect.collidepoint(alt2):
                     new_pos = alt2
                 else:
-                    # stay
                     new_pos = self.pos
                 break
 
@@ -256,6 +262,8 @@ class AgentBase:
         for i in range(min_i, max_i+1):
             for j in range(min_j, max_j+1):
                 gx, gy = pos_of_cell(i, j)
+                if self.local_map[j, i] != UNKNOWN: # 只更新未知区域
+                    continue
                 if math.hypot(gx - cx, gy - cy) <= r:
                     val = env.ground_grid[j, i]
                     # ✅ 不写入危险区，只写障碍物或可通行
@@ -376,8 +384,7 @@ class AgentBase:
                 nx, ny = cx + dx, cy + dy
                 if 0 <= nx < GRID_W and 0 <= ny < GRID_H:
                     if math.hypot(dx, dy) <= r:
-                        if self.local_map[ny, nx] == UNKNOWN:
-                            self.local_map[ny, nx] = DANGER  # ✅ 主观危险区域
+                        self.local_map[ny, nx] = DANGER  # ✅ 主观危险区域
 
     # ------------------------------
     # 辅助：小节点/大节点的默认行为扩展
@@ -438,16 +445,20 @@ class AgentBase:
         return
 
 
-    def send_map_patch(self, comms, targets, now_time, radius=None):
+    def send_map_patch(self, comms, targets, now_time, radius=SENSOR_SMALL):
         """向 targets 发送本地地图的补丁（稀疏表示）"""
         # pack as list of (i,j,val) for explored cells near agent to limit bandwidth
         explored = self.get_local_explored_cells()
         patch = []
         # limit patch to cells within a radius (in cells)
-        if radius is None:
-            radius = int(self.sensor_range // GRID_CELL) + 2
+        if self.is_large:
+            radius = SENSOR_LARGE
         ci, cj = cell_of_pos(self.pos)
         for (i,j) in list(explored):
+            if self.local_map[i, j] == VICTIM:
+                # always include victim cells
+                patch.append((i,j,int(self.local_map[i,j])))
+                continue
             if abs(i-ci) <= radius and abs(j-cj) <= radius:
                 patch.append((i,j,int(self.local_map[i,j])))
         msg = {'type':'map_patch', 'from':self.id, 'patch':patch, 'pos':self.pos}
@@ -545,7 +556,7 @@ class LargeAgent(AgentBase):
         """将收到的patch应用到自己的known_map"""
         for (i,j,val) in patch:
             # val is occupancy code
-            if 0 <= i < GRID_W and 0 <= j < GRID_H:
+            if 0 <= i < GRID_H and 0 <= j < GRID_W:
                 # overwrite unknowns or keep obstacle/danger priority
                 if self.known_map[i,j] == UNKNOWN and val != UNKNOWN:
                     self.known_map[i,j] = val
@@ -559,6 +570,7 @@ class LargeAgent(AgentBase):
                         self.known_map[i,j] = val
                     elif cur == UNKNOWN:
                         self.known_map[i,j] = val
+        self.local_map = self.known_map.copy()
 
     def fuse_own_sensing(self):
         """将自己感知到的地图写入 known_map"""
@@ -568,9 +580,9 @@ class LargeAgent(AgentBase):
 
     def brain_reason_and_assign(self, agents, now_time):
         # brain node: global planning
-        if now_time - self.last_reason_time < BRAIN_REASON_INTERVAL:
+        if now_time - self.brain_reason_time < BRAIN_REASON_INTERVAL:
             return
-        self.last_reason_time = now_time
+        self.brain_reason_time = now_time
         self.fuse_own_sensing()
         assigns = self.brain_planner.decide(self, agents)
         return assigns
