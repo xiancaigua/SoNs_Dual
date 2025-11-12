@@ -5,6 +5,8 @@ import matplotlib.colors as mcolors
 from utils import *
 import heapq
 
+# 因为matplotlib的画图效率太低了，所以这一版本废弃了
+
 # ======== 全局参数 ========
 GRID_W, GRID_H = 40, 30
 FREE, OBSTACLE, DANGER, VICTIM, UNKNOWN = 0, 1, 2, 3, -1
@@ -226,6 +228,11 @@ class DiscreteWorld:
         if brain is not None:
             if self.t- brain.last_brain_time >= 10:
                 global_assgins = brain.brain_reason(self)
+                if global_assgins is not None:
+                    for la_id, target in global_assgins.items():
+                        la = self.find_agent_by_id(la_id)
+                        if la is not None and la.alive:
+                            la.target = target
 
         for la in self.large_agents:
             if self.t - la.last_reason_time >= 5:

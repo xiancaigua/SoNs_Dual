@@ -87,173 +87,168 @@ class FollowBehavior(Behavior):
         else:
             return 0.0, 0.0
 
-class PathPlanningBehavior(Behavior):
+class PathPlanningBehaviorDiscrete(Behavior):
     """
-    路径规划 + 随机探索 + 安全约束 的智能行为类
-    --------------------------------------------------------
-    功能：
-      - 基于 local_map 的 A* 路径规划
-      - 当目标点变化或路径失效时自动重规划
-      - 到达目标后自动切换为随机探索
-      - 随机探索时仍考虑危险与障碍的安全避让
+    离散格子版 PathPlanning:
+      - astar 返回格子路径 [(x,y),...]
+      - decide(agent) 返回 next_cell (x,y) 或 None
+    设计假设:
+      - agent.pos 是格子坐标 (x,y)（整数）
+      - agent.goal 如果存在，也应为格子坐标 (x,y)
+      - agent.local_map 是格子地图，shape (H,W)，用 FREE/OBSTACLE/DANGER/UNKNOWN 标记
     """
 
-    def __init__(self, replan_interval=1, goal_tolerance=10.0):
-        super().__init__()
+    def __init__(self, replan_interval=1, goal_tolerance=0):
         self.replan_interval = replan_interval
-        self.goal_tolerance = goal_tolerance
-        self.last_plan_time = -999.0
-        self.cached_path = None
+        self.goal_tolerance = goal_tolerance  # 对格子一般置 0 或 1
+        self.last_plan_step = -999
+        self.cached_path = None  # list of cells [(x,y),...]
         self.path_index = 0
         self.last_goal = None
 
-    # ======================================================
-    # 基础：A* 路径规划
-    # ======================================================
+    # ---------------- A* ----------------
     def astar(self, grid, start, goal):
-        w, h = grid.shape[1], grid.shape[0]
-        open_list = []
-        heapq.heappush(open_list, (0, start))
+        """A* 返回从 start 到 goal 的格子路径（含 start 和 goal），找不到返回 None"""
+        H, W = grid.shape
+        if not (0 <= goal[0] < W and 0 <= goal[1] < H):
+            return None
+        if grid[goal[1], goal[0]] in (OBSTACLE, DANGER):
+            return None
+
+        open_heap = []
+        heapq.heappush(open_heap, (0 + self.heuristic(start, goal), 0, start))
         came_from = {}
         gscore = {start: 0}
-        fscore = {start: self.heuristic(start, goal)}
+        visited = set()
 
-        while open_list:
-            _, current = heapq.heappop(open_list)
+        while open_heap:
+            f, g, current = heapq.heappop(open_heap)
             if current == goal:
-                return self.reconstruct_path(came_from, current)
+                # reconstruct
+                path = [current]
+                while current in came_from:
+                    current = came_from[current]
+                    path.append(current)
+                path.reverse()
+                return path
 
-            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
-                nx, ny = current[0]+dx, current[1]+dy
-                if 0 <= nx < w and 0 <= ny < h:
-                    val = grid[ny, nx]   # ✅ 行列顺序修正
-                    if val in [OBSTACLE, DANGER]:  # ✅ 安全过滤
-                        continue
-                    tentative_g = gscore[current] + 1
-                    if (nx, ny) not in gscore or tentative_g < gscore[(nx, ny)]:
-                        came_from[(nx, ny)] = current
-                        gscore[(nx, ny)] = tentative_g
-                        fscore[(nx, ny)] = tentative_g + self.heuristic((nx, ny), goal)
-                        heapq.heappush(open_list, (fscore[(nx, ny)], (nx, ny)))
+            if current in visited:
+                continue
+            visited.add(current)
+
+            cx, cy = current
+            for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
+                nb = (cx + dx, cy + dy)
+                nx, ny = nb
+                if not (0 <= nx < W and 0 <= ny < H):
+                    continue
+                if grid[ny, nx] in (OBSTACLE, DANGER):
+                    continue
+                tentative = g + 1
+                if tentative < gscore.get(nb, float('inf')):
+                    gscore[nb] = tentative
+                    came_from[nb] = current
+                    heapq.heappush(open_heap, (tentative + self.heuristic(nb, goal), tentative, nb))
         return None
 
     def heuristic(self, a, b):
-        """启发式函数（曼哈顿距离）"""
-        return abs(a[0]-b[0]) + abs(a[1]-b[1])
+        # Manhattan
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
-    def reconstruct_path(self, came_from, current):
-        """重建A*路径"""
-        path = [current]
-        while current in came_from:
-            current = came_from[current]
-            path.append(current)
-        path.reverse()
-        return path
+    # ---------------- decide ----------------
+    def decide(self, agent, world_step_counter=None):
+        """
+        输入 agent（具有 .pos (x,y), .goal (x,y) 或 None, .local_map grid）
+        返回: 下一个格子 (x,y) 或 None（fallback）
+        world_step_counter: 可选的计时器（用于 replan_interval）
+        """
+        # ensure integer positions
+        start = (int(agent.pos[0]), int(agent.pos[1]))
 
-    # ======================================================
-    # 主行为决策逻辑
-    # ======================================================
-    def decide(self, agent, sense_data, dt):
-        now = getattr(agent, "sim_time", 0.0)
-        grid = agent.local_map
+        # 若无目标 -> 随机安全探索
+        if agent.target is None:
+            return self.safe_random_explore(agent)
 
-        # ---- [1] 检查是否有目标 ----
-        if not agent.has_goal or agent.goal is None:
-            # 无目标 → 安全随机游走
-            return self.safe_random_explore(agent, grid)
-            return 0, 0
+        goal = (int(agent.target[0]), int(agent.target[1]))
 
-        # ---- [2] 检查是否到达目标 ----
-        goal_dist = distance(agent.pos, agent.goal)
-        if goal_dist < self.goal_tolerance:
+        # 已到达目标（格子相同或相邻）
+        if start == goal or self.heuristic(start, goal) <= self.goal_tolerance:
             agent.has_goal = False
             agent.goal = None
-            return self.safe_random_explore(agent, grid)
-            return 0, 0
+            self.cached_path = None
+            self.path_index = 0
+            return None
 
-        # ---- [3] 目标点是否变化？ ----
-        goal_changed = (
-            self.last_goal is None or 
-            distance(self.last_goal, agent.goal) > self.goal_tolerance
-        )
-
-        start_cell = cell_of_pos(agent.pos)
-        goal_cell = cell_of_pos(agent.goal)
-
-        # ---- [4] 判断是否需要重新规划 ----
+        # 是否需要重算路径
+        goal_changed = (self.last_goal is None) or (goal != self.last_goal)
         need_replan = (
-            self.cached_path is None or
-            self.path_index >= len(self.cached_path) or
-            goal_changed or
-            now - self.last_plan_time > self.replan_interval
+            self.cached_path is None
+            or self.path_index >= (len(self.cached_path) if self.cached_path else 0)
+            or goal_changed
+            or (world_step_counter is not None and (world_step_counter - self.last_plan_step) >= self.replan_interval)
         )
 
         if need_replan:
-            path = self.astar(grid, start_cell, goal_cell)
-            if path is None:
-                # 无路径 → 安全随机游走
-                return self.safe_random_explore(agent, grid)
-                return 0, 0
+            # 使用 agent.local_map（离散格子）做 A*
+            path = self.astar(agent.local_map, start, goal)
+            if not path:
+                # 无路径 -> 随机安全探索（离散）
+                self.cached_path = None
+                self.path_index = 0
+                self.last_goal = None
+                return self.safe_random_explore(agent)
             self.cached_path = path
-            self.path_index = 0
-            self.last_plan_time = now
-            self.last_goal = agent.goal
+            self.path_index = 1  # path[0] == start, 所以下一步是 path[1]
+            self.last_plan_step = world_step_counter if world_step_counter is not None else 0
+            self.last_goal = goal
 
-        # ---- [5] 沿路径前进 ----
-        if self.path_index < len(self.cached_path):
-            target_cell = self.cached_path[self.path_index]
-            target_pos = pos_of_cell(*target_cell)
-            dx = target_pos[0] - agent.pos[0]
-            dy = target_pos[1] - agent.pos[1]
-            dist = math.hypot(dx, dy)
-            if dist < 5:  # 到达该节点
-                self.path_index += 1
-            sx, sy = normalize((dx, dy))
-            vx = sx * AGENT_MAX_SPEED
-            vy = sy * AGENT_MAX_SPEED
-            return vx, vy
+        # 如果有缓存路径，取下一个格子
+        if self.cached_path and self.path_index < len(self.cached_path):
+            next_cell = self.cached_path[self.path_index]
+            # 如果 next_cell 突然变得不可通行（agent.local_map），尝试重规划下一步
+            nx, ny = next_cell
+            if agent.local_map[ny, nx] in (OBSTACLE, DANGER):
+                # invalidate and try replan next tick
+                self.cached_path = None
+                self.path_index = 0
+                return self.safe_random_explore(agent)
+            # advance index for next call
+            self.path_index += 1
+            return next_cell
 
-        # ---- [6] 路径执行完毕 ----
-        agent.has_goal = False
-        agent.goal = None
-        return self.safe_random_explore(agent, grid)
-        return 0, 0
+        # 路径被走完
+        self.cached_path = None
+        self.path_index = 0
+        return None
 
-    # ======================================================
-    # 安全随机探索逻辑
-    # ======================================================
-    def safe_random_explore(self, agent, grid):
+    # ---------------- safe random explore ----------------
+    def safe_random_explore(self, agent):
         """
-        随机探索时也遵守安全约束：
-        - 避开 OBSTACLE / DANGER 区域；
-        - 保持平滑方向变化；
+        离散随机探索：在 4 邻域中随机选择一个安全的 FREE 格子（优先未探索格）
+        返回选中的格子 (x,y) 或 None（表示原地不动）
         """
-        if random.random() < 0.02:
-            ang = random.uniform(0, 2*math.pi)
-            agent.vel = (math.cos(ang)*10.0, math.sin(ang)*10.0)
-
-        vx, vy = agent.vel
-        sx, sy = normalize((vx, vy))
-
-        # 预测下一个位置，检查是否安全
-        next_x = int(clamp(agent.pos[0] + sx * 5, 0, grid.shape[0]-1))
-        next_y = int(clamp(agent.pos[1] + sy * 5, 0, grid.shape[1]-1))
-
-        if grid[next_x, next_y] in [1, 2]:  # OBSTACLE 或 DANGER
-            # 选择随机安全方向
-            safe_dirs = []
-            for ang in np.linspace(0, 2*math.pi, 16):
-                dx, dy = math.cos(ang), math.sin(ang)
-                tx = int(clamp(agent.pos[0] + dx * 5, 0, grid.shape[0]-1))
-                ty = int(clamp(agent.pos[1] + dy * 5, 0, grid.shape[1]-1))
-                if grid[tx, ty] not in [1, 2]:
-                    safe_dirs.append((dx, dy))
-            if safe_dirs:
-                sx, sy = random.choice(safe_dirs)
-
-        vx = sx * AGENT_MAX_SPEED
-        vy = sy * AGENT_MAX_SPEED
-        return vx, vy
+        x0, y0 = int(agent.pos[0]), int(agent.pos[1])
+        neighbors = []
+        unseen = []
+        safe = []
+        for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
+            nx, ny = x0 + dx, y0 + dy
+            if not (0 <= nx < agent.local_map.shape[1] and 0 <= ny < agent.local_map.shape[0]):
+                continue
+            val_local = agent.local_map[ny, nx]
+            # if local unknown, prefer exploring unknown (but ensure not obstacle by global info if available)
+            if val_local == UNKNOWN:
+                unseen.append((nx, ny))
+            elif val_local == FREE:
+                safe.append((nx, ny))
+            # avoid OBSTACLE/DANGER
+        # 优先未见过的格子
+        if unseen:
+            return random.choice(unseen)
+        if safe:
+            return random.choice(safe)
+        # 没有安全格子，保持原地
+        return None
 
 
 # ---------------------------------------------------------------------
@@ -549,10 +544,10 @@ class ERRTFrontierAssignmentBehavior(Multi_Behavior):
                 if i in row_ind:
                     match_idx = np.where(row_ind == i)[0][0]
                     goal_idx = col_ind[match_idx]
-                    assignments[agent_id] = self.candidate_goals[goal_idx]
+                    assignments[agent_id] = cell_of_pos(self.candidate_goals[goal_idx])
                 else:
                     # 如果没有匹配到目标，使用fallback策略
-                    assignments[agent_id] = self.fallback_assignment(agents[i], global_map)
+                    assignments[agent_id] = cell_of_pos(self.fallback_assignment(agents[i], global_map))
             
             self.last_assignment = assignments
 
