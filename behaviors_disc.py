@@ -538,14 +538,6 @@ class ERRTFrontierAssignmentBehavior(Multi_Behavior):
         
         # 2. 构建多目标成本矩阵
         cost_matrix = self.build_cost_matrix(agents, self.candidate_goals, global_map)
-        
-        # plt.imshow(global_map, cmap='viridis')
-        # x1s = [g[0]//10 for g in self.candidate_goals]
-        # y1s = [g[1]//10 for g in self.candidate_goals]
-        # x2s = [a.pos[0]//10 for a in agents]
-        # y2s = [a.pos[1]//10 for a in agents]
-        # plt.scatter(x1s, y1s, c='red', marker='x', label='Candidate Goals')
-        # plt.scatter(x2s, y2s, c='blue', marker='o', label='Agents')
 
         # 3. 使用优化算法进行分配
         try:

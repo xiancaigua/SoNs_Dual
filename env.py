@@ -9,7 +9,7 @@ from parameters import *
 from utils import *
 from communicate import Communication
 from agent import AgentBase, LargeAgent
-from behaviors import *
+from SoNs_Dual.behaviors import *
 # -----------------------------
 # 环境元素类
 # -----------------------------
