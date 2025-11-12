@@ -15,7 +15,7 @@ AGENT_COLORS = {
 }
 
 REALTIME = True
-FPS = 5
+FPS = 10
 
 
 # ======== 工具函数 ========
@@ -222,6 +222,20 @@ class DiscreteWorld:
                 # large 节点把自己的 local map 融入 known_map（优先级可调整）
                 a.fuse_own_sensing(self.agents)
         
+        # ---- 5. 大节点决策（brain节点负责分配任务） ----
+        if brain is not None:
+            if self.t- brain.last_brain_time >= 10:
+                global_assgins = brain.brain_reason(self)
+
+        for la in self.large_agents:
+            if self.t - la.last_reason_time >= 5:
+                assigns = la.reason(self)
+                # 执行分配的任务
+                for sa_id, target in assigns.items():
+                    sa = self.find_agent_by_id(sa_id)
+                    if sa is not None and sa.alive:
+                        sa.target = target
+                la.last_reason_time = self.t
 
         for a in self.large_agents + self.agents:
             if a.alive:
@@ -323,6 +337,9 @@ class LargeAgent(BaseAgent):
         self.is_brain = False
         self.commanded_agents = []
         self.multi_behavior = ERRTFrontierAssignmentBehavior()
+        self.last_reason_time = -10  # 上次决策时间步
+        self.last_brain_time = -10  # 上次作为脑节点的时间步
+        self.brain_behavior = BrainGlobalPlanner()
     def fuse_own_sensing(self, small_agents):
         for sa in small_agents:
             if sa.father_id == self.id:
@@ -347,10 +364,18 @@ class LargeAgent(BaseAgent):
                                 elif cur == UNKNOWN:
                                     self.local_map[i,j] = val
     def reason(self, world):
-        
+        self.commanded_agents = []
+        for a in world.agents:
+            if a.father_id == self.id:
+                self.commanded_agents.append(a)
         # 大节点可以作为智能体决策的“区域指挥官”
         assignments = self.multi_behavior.decide(self, self.commanded_agents)
         return assignments
+    def brain_reason(self, world):
+        # 脑节点负责全局规划和任务分配
+        self.last_brain_time = world.t
+        global_assignments = self.brain_behavior.decide(self, world.large_agents)
+        return global_assignments
 
 # ======== 绘图函数 ========
 def draw_world(world, fig, main_ax, mini_axes):

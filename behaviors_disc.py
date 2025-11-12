@@ -528,7 +528,7 @@ class ERRTFrontierAssignmentBehavior(Multi_Behavior):
 
     def decide(self, agent, agents):
         """基于E-RRT思想的多目标优化决策"""
-        global_map = agent.known_map
+        global_map = agent.local_map
         
         # 1. 生成伪随机候选目标
         self.candidate_goals = self.generate_pseudo_random_goals(global_map)
@@ -740,14 +740,10 @@ class BrainGlobalPlanner(Multi_Behavior):
         return row_ind, col_ind      
 
     def decide(self, brain_agent, large_agents):
-        now = time.time()
-        if now - self.last_plan_time < self.plan_interval:
-            return None
-        self.last_plan_time = now
 
         self.largents = large_agents
         self.min_cluster_size = max(NUM_LARGE, len(large_agents))
-        global_map = brain_agent.known_map
+        global_map = brain_agent.local_map
         goals = self.compute_global_plan(global_map)
 
         if not goals or len(large_agents) == 0:
@@ -833,7 +829,8 @@ class BrainGlobalPlanner(Multi_Behavior):
             gx = clamp(g[0], 0, WORLD_W)
             gy = clamp(g[1], 0, WORLD_H)
             if not any(math.hypot(gx - f[0], gy - f[1]) < 10.0 for f in final):
-                final.append((gx, gy))
+                x,y = cell_of_pos((gx, gy))
+                final.append((x, y))
         self.global_goals = final
         return self.global_goals
     
@@ -856,9 +853,9 @@ class BrainGlobalPlanner(Multi_Behavior):
                     continue
 
                 # ✅ Step 2: 必须邻近自由区
-                neighbors = global_map[y-1:y+2, x-1:x+2].flatten()
-                if not np.any(neighbors == FREE):
-                    continue
+                # neighbors = global_map[y-1:y+2, x-1:x+2].flatten()
+                # if not np.any(neighbors == FREE):
+                #     continue
 
                 # ✅ Step 3: 安全检查（周围不能有障碍或危险）
                 region = global_map[
@@ -877,7 +874,7 @@ class BrainGlobalPlanner(Multi_Behavior):
                 # ✅ Step 5: 转换为世界坐标后保存
                 gx, gy = pos_of_cell(x, y)
                 frontiers.append((gx, gy))
-
+                # frontiers.append((x, y))
         return frontiers
 
     # =====================================================
