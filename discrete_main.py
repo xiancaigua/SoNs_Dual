@@ -2,6 +2,7 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from utils import *
 import heapq
 
 # ======== 全局参数 ========
@@ -152,7 +153,7 @@ class DiscreteWorld:
                     self.wasted_large_agents.append(old_brain)
                     try:
                         # 把老脑的 known_map/son_ids/history 交接到新脑（浅/深拷贝按需）
-                        new_brain.known_map = np.copy(old_brain.known_map)
+                        new_brain.local_map = np.copy(old_brain.local_map)
                         new_brain.son_ids = list(getattr(old_brain, "son_ids", []))
                         # last reason time 保持
                         new_brain.last_reason_time = getattr(old_brain, "last_reason_time", new_brain.last_reason_time)
@@ -179,7 +180,48 @@ class DiscreteWorld:
                 if getattr(la, "is_brain", False):
                     self.brain_id = idx
                     break
+        
+        if len(self.large_agents) == 0:
+            return  # No large agents left to proceed
+        
+        brain = None
+        if getattr(self, "brain_id", None) is not None and 0 <= self.brain_id < len(self.large_agents):
+            brain = self.large_agents[self.brain_id]
+        
+        # ---- 3. 更新层级关系：为每个小节点分配最近的大节点为 father（考虑切换阈值） ----
+        for sa in self.agents:
+            # find the nearest alive large agent
+            if not self.large_agents:
+                sa.father_id = None
+                continue
+            candidates = sorted(self.large_agents, key=lambda la: distance(la.pos, sa.pos))
+            nearest = candidates[0]
+            old_father = self.find_agent_by_id(getattr(sa, "father_id", None))
+            if old_father is not None:
+                dist_old = distance(sa.pos, old_father.pos)
+                dist_new = distance(sa.pos, nearest.pos)
+                # hysteresis: 小于阈值则不切换
+                if abs(dist_new - dist_old) < 50:
+                    continue
+            sa.father_id = nearest.id
+            # maintain son's list on the chosen large agent (we will rebuild later)
+        # rebuild son lists for large agents
+        for la in self.large_agents:
+            la.son_ids = []
+        for sa in self.agents:
+            parent = self.find_agent_by_id(getattr(sa, "father_id", None))
+            if parent is not None:
+                parent.son_ids.append(sa.id)  
 
+        # ---- 4. Agents update sensing -> 更新各自 local_map, large 节点把自己的 sensing 融合到 known_map ----
+        for a in self.agents:
+            a.sense(self)
+        for a in self.large_agents:
+            a.sense(self)
+            if getattr(a, "is_large", False):
+                # large 节点把自己的 local map 融入 known_map（优先级可调整）
+                a.fuse_own_sensing(self.agents)
+        
 
         for a in self.large_agents + self.agents:
             if a.alive:
@@ -191,9 +233,17 @@ class DiscreteWorld:
                 if in_bounds(x, y):
                     self.global_known[y, x] = self.true_grid[y, x]
 
+    def find_agent_by_id(self, id_):
+        for la in self.large_agents:
+            if la.id == id_:
+                return la
+        for sa in self.agents:
+            if sa.id == id_:
+                return sa
+        return None
 
 
-from SoNs_Dual.behaviors_disc import *
+from behaviors_disc import *
 
 
 # ======== Agent基类 ========
@@ -207,6 +257,9 @@ class BaseAgent:
         self.explored = set([pos])
         self.local_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
 
+        self.sons_ids = []  # 仅大节点使用
+        self.father_id = None  # 仅小节点使用
+
     def sense(self, world):
         r = self.sensor_range
         for dy in range(-r, r+1):
@@ -214,7 +267,14 @@ class BaseAgent:
                 nx, ny = self.pos[0]+dx, self.pos[1]+dy
                 if in_bounds(nx, ny):
                     val = world.true_grid[ny, nx]
-                    self.local_map[ny, nx] = val
+                    if val != UNKNOWN:
+                        if val == DANGER and random.random() < 0.3:
+                            # 30% 概率未能识别到危险
+                            self.local_map[ny, nx] = val
+                        elif val == VICTIM or val == OBSTACLE:
+                            self.local_map[ny, nx] = val
+                        else:
+                            self.local_map[ny, nx] = FREE
                     self.explored.add((nx, ny))
 
     def step(self, world):
@@ -241,6 +301,12 @@ class BaseAgent:
                 self.explored.add((nx, ny))
                 return
 
+    def get_local_explored_cells(self):
+        """返回该agent已探索（非UNKNOWN）的格子集合（i,j）"""
+        inds = np.where(self.local_map != UNKNOWN)
+        return set(zip(inds[0].tolist(), inds[1].tolist()))
+    
+
 
 # ======== 小/大节点定义 ========
 class SmallAgent(BaseAgent):
@@ -252,9 +318,34 @@ class LargeAgent(BaseAgent):
     def __init__(self, id_, pos):
         super().__init__(id_, pos, sensor_range=4, comm_range=8)
         self.type = "large"
+        self.is_large = True
+        # self.local_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np)
         self.is_brain = False
         self.commanded_agents = []
         self.multi_behavior = ERRTFrontierAssignmentBehavior()
+    def fuse_own_sensing(self, small_agents):
+        for sa in small_agents:
+            if sa.father_id == self.id:
+                for (x, y) in sa.explored:
+                    patch = sa.get_local_explored_cells()
+                    """将收到的patch应用到自己的known_map"""
+                    for (i,j) in patch:
+                        # val is occupancy code
+                        val = sa.local_map[i,j]
+                        if 0 <= i < GRID_H and 0 <= j < GRID_W:
+                            # overwrite unknowns or keep obstacle/danger priority
+                            if self.local_map[i,j] == UNKNOWN and val != UNKNOWN:
+                                self.local_map[i,j] = val
+                            else:
+                                # 若已有UNKNOWN则覆盖，否则保持原先（或根据优先级更新）
+                                # 优先级： DANGER/OBSTACLE > VICTIM > FREE
+                                cur = self.local_map[i,j]
+                                if val == DANGER or val == OBSTACLE:
+                                    self.local_map[i,j] = val
+                                elif val == VICTIM:
+                                    self.local_map[i,j] = val
+                                elif cur == UNKNOWN:
+                                    self.local_map[i,j] = val
     def reason(self, world):
         
         # 大节点可以作为智能体决策的“区域指挥官”

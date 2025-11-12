@@ -4,7 +4,7 @@ import math
 import time
 import numpy as np
 
-from behaviors import *
+from SoNs_Dual.behaviors import *
 from utils import *
 # -----------------------------
 # Agent（小节点）类
