@@ -33,10 +33,11 @@ def main(rounds=1):
     comms = Communication(packet_loss=COMM_PACKET_LOSS, delay=COMM_DELAY)
     
     # world
-    if rounds < 100:
-        world = World(seed=SEED,world_id=(1 + rounds//10))
-    else:
-        world = World(seed=SEED)
+    # if rounds < 100:
+    #     world = World(seed=SEED,world_id=5)
+    # else:
+    #     world = World(seed=SEED)
+    world = World(seed=SEED)
 
     running = True
     paused = False

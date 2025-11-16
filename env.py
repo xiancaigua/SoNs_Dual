@@ -179,8 +179,8 @@ class World:
 
                 la = LargeAgent(
                     i, x, y,
-                    multi_behavior=FormationAssignmentBehavior(),
-                    behavior=PathPlanningBehavior()
+                    multi_behavior=ERRTFrontierAssignmentBehavior(),
+                    behavior=ExploreBehavior()
                 )
                 self.large_agents.append(la)
         else:
@@ -209,15 +209,15 @@ class World:
 
                     if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
                         self.large_agents.append(LargeAgent(i, x, y,\
-                                                            multi_behavior=FormationAssignmentBehavior(),
-                                                            behavior=PathPlanningBehavior()))
+                                                            multi_behavior=ERRTFrontierAssignmentBehavior(),
+                                                            behavior=ExploreBehavior()))
                         break
                 else:
                     # 如果找不到合适位置，则直接使用base_pos附近
                     self.large_agents.append(LargeAgent(i, base_pos[0] + random.uniform(-10, 10),
                                                         base_pos[1] + random.uniform(-10, 10),
-                                                        multi_behavior=FormationAssignmentBehavior(),
-                                                        behavior=PathPlanningBehavior()))
+                                                        multi_behavior=ERRTFrontierAssignmentBehavior(),
+                                                        behavior=ExploreBehavior()))
         if self.large_agents:
             brain_node = min(self.large_agents, key=lambda a: a.id)
             brain_node.is_brain = True
@@ -243,7 +243,7 @@ class World:
                 # 检查是否在自由空间中
                 if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
                     # 创建小节点
-                    self.agents.append(AgentBase(i + 1000, x, y, behavior=PathPlanningBehavior()))
+                    self.agents.append(AgentBase(i + 1000, x, y, behavior=ExploreBehavior()))
                     break
                 attempts += 1
             else:
@@ -439,11 +439,11 @@ class World:
             self.victim.draw(screen)
         # draw agents' traces and bodies
         for la in self.large_agents + self.wasted_large_agents:
-            la.draw_hist(screen, color=(200,160,60))
+            # la.draw_hist(screen, color=(200,160,60))
             la.draw_self(screen)
             la.draw_goal(screen)
         for a in self.agents + self.wasted_agents:
-            a.draw_hist(screen)
+            # a.draw_hist(screen)
             a.draw_self(screen)
             a.draw_goal(screen)
         if self.brain_id is not None:

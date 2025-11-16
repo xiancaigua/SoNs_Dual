@@ -540,8 +540,8 @@ class AgentBase:
 class LargeAgent(AgentBase):
     def __init__(self, id_, x, y, is_brain=False, behavior=None ,multi_behavior=None):
         super().__init__(id_, x, y, sensor_range=SENSOR_LARGE, is_large=True, behavior=behavior)
-        self.last_reason_time = time.time()
-        self.brain_reason_time = time.time()
+        self.last_reason_time = -10
+        self.brain_reason_time = -10
         self.known_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
         # self.local_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
         # self.assigned = {}  # agent_id -> waypoint

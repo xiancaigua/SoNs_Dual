@@ -32,7 +32,7 @@ COMM_DELAY = 0.0  # 可模拟延迟（秒）
 
 DANGER_ZONE_RADIUS = 22
 
-SEED = None
+SEED = 110716
 
 # Occupancy codes for maps:
 # -1 unknown, 0 free, 1 obstacle, 2 danger, 3 victim

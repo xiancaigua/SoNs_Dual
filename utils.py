@@ -168,6 +168,7 @@ def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=
             "alive": agent.alive,
             "final_position": [int(a) for a in agent.pos],
             "trajectory_length": len(agent.hist),
+            "hist_traj": [[int(a) for a in pos] for pos in agent.hist],
             "explored_cells": len(agent.get_local_explored_cells()),
             "has_goal": agent.has_goal,
             "goal_position": [int(a) for a in agent.goal] if agent.goal is not None else None
@@ -181,6 +182,7 @@ def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=
             "alive": large_agent.alive,
             "final_position": [int(a) for a in large_agent.pos],
             "trajectory_length": len(large_agent.hist),
+            "hist_traj": [[int(a) for a in pos] for pos in large_agent.hist],
             "known_cells": int(np.sum(large_agent.known_map != UNKNOWN)),
             "total_cells": large_agent.known_map.size,
             "known_percentage": (np.sum(large_agent.known_map != UNKNOWN) / large_agent.known_map.size) * 100,
