@@ -8,7 +8,7 @@ import numpy as np
 from parameters import *
 from utils import *
 from communicate import Communication
-from agent import AgentBase, LargeAgent
+from agent import AgentBase, LargeAgent, BrainAgent
 from behaviors import *
 # -----------------------------
 # 环境元素类
@@ -21,23 +21,43 @@ class Obstacle:
         self.height = h
     def draw(self, screen):
         pygame.draw.rect(screen, (80,80,80), self.rect)
-class DangerZone:
-    def __init__(self, x, y, r=DANGER_ZONE_RADIUS):
-        self.pos = (x,y)
-        self.r = r
-    def contains(self, p):
-        return distance(self.pos, p) <= self.r
-    def draw(self, screen):
-        # 创建一个临时的 Surface
-        temp_surface = pygame.Surface((self.r * 2, self.r * 2), pygame.SRCALPHA)
-        # 填充浅红色（带透明度）
-        transparent_red = (200, 40, 40, 100)  # RGBA，最后一个值是透明度
-        pygame.draw.circle(temp_surface, transparent_red, (self.r, self.r), self.r)
-        # 将透明 Surface 绘制到屏幕上
-        screen.blit(temp_surface, (int(self.pos[0] - self.r), int(self.pos[1] - self.r)))
 
-        # 绘制边框
-        pygame.draw.circle(screen, (120, 20, 20), (int(self.pos[0]), int(self.pos[1])), self.r, 2)
+class DangerZone:
+    # --- MOD: 危险区改为网格矩形 ---
+    def __init__(self, grid_x, grid_y, grid_w, grid_h):
+        self.grid_x = grid_x
+        self.grid_y = grid_y
+        self.grid_w = grid_w
+        self.grid_h = grid_h
+
+        # 像素级矩形
+        self.rect = pygame.Rect(
+            grid_x * GRID_CELL,
+            grid_y * GRID_CELL,
+            grid_w * GRID_CELL,
+            grid_h * GRID_CELL
+        )
+
+        # 中心点
+        self.pos = (
+            (self.rect.left + self.rect.right) / 2,
+            (self.rect.top + self.rect.bottom) / 2
+        )
+
+    def contains(self, p):
+        """点是否在危险矩形内"""
+        return self.rect.collidepoint(p[0], p[1])
+
+    def draw(self, screen):
+        # 半透明矩形
+        temp = pygame.Surface((self.rect.width, self.rect.height), pygame.SRCALPHA)
+        transparent_red = (200, 40, 40, 100)  # 半透明红色
+        pygame.draw.rect(temp, transparent_red, (0, 0, self.rect.width, self.rect.height))
+        screen.blit(temp, (self.rect.left, self.rect.top))
+
+        # 边框
+        pygame.draw.rect(screen, (150, 20, 20), self.rect, 2)
+
 class Victim:
     def __init__(self, x, y):
         self.pos = (x,y)
@@ -56,30 +76,31 @@ class World:
         self.width = WORLD_W
         self.height = WORLD_H
         self.time = 0.0
+        
         self.obstacles = []
         self.danger_zones = []
+        self.victim = None
+
+        self.brain_id = None
         self.agents = []
         self.large_agents = []
         self.wasted_agents = []
         self.wasted_large_agents = []
-        self.brain_id = None
-        self.victim = None
-        self.grid_visited_union = set()
 
         # 初始化地面栅格
         self.ground_grid = np.full((GRID_H, GRID_W), FREE, dtype=np.int8)
+        self.known_grid = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
+        self.visited_grid = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
 
-        if world_id >= 0:
-            self.generate_fixed_map(world_id)  # 使用固定地图布局
-            self.spawn_large_agents(NUM_LARGE)
-            self.spawn_agents(NUM_AGENTS)
-        else:
-            # 环境生成顺序
-            self.generate_static_obstacles(NUM_OBSTACLES)
-            self.generate_danger_zones(NUM_DANGER_ZONES)
-            self.spawn_large_agents(NUM_LARGE)
-            self.spawn_agents(NUM_AGENTS)
-            self.place_victim()   # victim放在最后，以确保存在brain node
+        # 环境生成顺序
+        self.generate_danger_zones(NUM_DANGER_ZONES)
+        self.generate_static_obstacles(NUM_OBSTACLES)
+
+        self.spawn_center = self.random_free_pos(margin=60)
+
+        self.brain = BrainAgent(-1, self.spawn_center[0],self.spawn_center[1])
+        self.spawn_agents(NUM_LARGE)
+        self.place_victim()   # victim放在最后，以确保存在brain node
 
     # ========== 基础工具函数 ==========
     def is_in_obstacle(self, x, y):
@@ -92,7 +113,7 @@ class World:
     def is_in_danger(self, x, y):
         """判断坐标是否在危险区内"""
         for dz in self.danger_zones:
-            if distance((x, y), dz.pos) < dz.r:
+            if dz.contains((x,y)):
                 return True
         return False
 
@@ -107,147 +128,113 @@ class World:
 
     # ========== 环境生成 ==========
     def generate_static_obstacles(self, n=NUM_OBSTACLES):
-        # whatever
+
+        # === MODIFIED: 全网格化障碍物生成 ===
         for _ in range(n):
-            w = random.randint(30, 120)
-            h = random.randint(20, 120)
-            x = random.uniform(0, WORLD_W - w)
-            y = random.uniform(0, WORLD_H - h)
+            # 障碍物的大小以“网格数量”为单位
+            gw = random.randint(2, 12)  # 占据 2~6 个网格宽
+            gh = random.randint(2, 12)  # 占据 2~6 个网格高
+
+            # 随机选择左上角的网格索引
+            gi = random.randint(0, GRID_W - gw - 1)
+            gj = random.randint(0, GRID_H - gh - 1)
+
+            # 计算世界坐标
+            x = gi * GRID_CELL
+            y = gj * GRID_CELL
+            w = gw * GRID_CELL
+            h = gh * GRID_CELL
+
             obs = Obstacle(x, y, w, h)
             self.obstacles.append(obs)
-            # 更新地面占据网格
-            left = int(x // GRID_CELL)
-            top = int(y // GRID_CELL)
-            right = int((x + w) // GRID_CELL)
-            bottom = int((y + h) // GRID_CELL)
-            for i in range(left, min(GRID_W, right + 1)):
-                for j in range(top, min(GRID_H, bottom + 1)):
+
+            # 标注所有占据的网格
+            for i in range(gi, gi + gw):
+                for j in range(gj, gj + gh):
                     self.ground_grid[j, i] = OBSTACLE
 
-    def generate_danger_zones(self, num=NUM_DANGER_ZONES, max_attempts=200):
-        # no overlap with obstacles or existing danger zones
+    def generate_danger_zones(self, num=NUM_DANGER_ZONES):
+        # --- MOD: 危险区域改为网格矩形 ---
         for _ in range(num):
-            attempts = 0
-            while attempts < max_attempts:
-                x = random.randint(40, WORLD_W - 40)
-                y = random.randint(40, WORLD_H - 40)
-                r = random.randint(15, 60)
-                # 检查与障碍物和已有危险区的重叠
-                overlap = False
-                for obs in self.obstacles:
-                    cx = clamp(x, obs.rect.left, obs.rect.right)
-                    cy = clamp(y, obs.rect.top, obs.rect.bottom)
-                    if math.hypot(cx - x, cy - y) < r + max(obs.width, obs.height) * 0.5:
-                        overlap = True
-                        break
-                for dz in self.danger_zones:
-                    if math.hypot(dz.pos[0] - x, dz.pos[1] - y) < (dz.r + r) * 0.8:
-                        overlap = True
-                        break
-                if not overlap:
-                    self.danger_zones.append(DangerZone(x, y, r))
-                    # 更新地面栅格
-                    left = max(0, int((x - r) // GRID_CELL))
-                    right = min(GRID_W - 1, int((x + r) // GRID_CELL))
-                    top = max(0, int((y - r) // GRID_CELL))
-                    bottom = min(GRID_H - 1, int((y + r) // GRID_CELL))
-                    for i in range(left, right + 1):
-                        for j in range(top, bottom + 1):
-                            gx, gy = pos_of_cell(i, j)
-                            if math.hypot(gx - x, gy - y) <= r:
-                                self.ground_grid[j, i] = DANGER
-                    break
-                attempts += 1
 
-    def spawn_large_agents(self, num=2):
-        # free space
+            # 随机矩形尺寸（以格为单位）
+            grid_w = random.randint(2, 12)
+            grid_h = random.randint(2, 12)
+
+            # 随机位置
+            gx = random.randint(0, GRID_W - grid_w - 1)
+            gy = random.randint(0, GRID_H - grid_h - 1)
+
+            # 创建危险区
+            dz = DangerZone(gx, gy, grid_w, grid_h)
+            self.danger_zones.append(dz)
+
+            # ground_grid 填 DANGER
+            for j in range(gy, gy + grid_h):
+                for i in range(gx, gx + grid_w):
+                    self.ground_grid[j, i] = DANGER
+
+
+    def spawn_agents(self,num=NUM_LARGE):
+        """在 base 点生成所有大机器人"""
+        init_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
+        init_map[init_map == DANGER] = UNKNOWN
+        init_map[init_map == VICTIM] = UNKNOWN
+        init_map[init_map == FREE] = UNKNOWN
+        for r in range(GRID_H):      # 行 (y)
+            for c in range(GRID_W):  # 列 (x)
+                # 获取真值地图这一格的状态
+                val = self.ground_grid[r, c]
+                if val == OBSTACLE:
+                    # 如果真值本来就是墙，那肯定是墙
+                    init_map[r, c] = OBSTACLE
+        self.visited_grid = init_map.copy()
         self.large_agents = []
-        base_pos = None
-        attempts = 0
-        if hasattr(self, "spawn_center"):
-            base_x, base_y = self.spawn_center
-            for i in range(num):
-                # 让每个大节点稍微分开
-                angle = (2 * math.pi / num) * i
-                r = 30 + random.uniform(-10, 10)
-                x = base_x + r * math.cos(angle)
-                y = base_y + r * math.sin(angle)
+        bx, by = self.spawn_center   # 基地坐标
+        small_global_id = 1000
 
-                # 确保安全位置
-                if self.is_in_obstacle(x, y) or self.is_in_danger(x, y):
-                    x, y = self.random_free_pos(margin=60)
-
-                la = LargeAgent(
-                    i, x, y,
-                    multi_behavior=ERRTFrontierAssignmentBehavior(),
-                    behavior=ExploreBehavior()
-                )
-                self.large_agents.append(la)
-        else:
-            while attempts < 20:
-                # 随机一个基础点
-                x, y = self.random_free_pos(margin=60)
-                if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
-                    base_pos = (x, y)
-                    break
-                attempts += 1
-            if base_pos is None:
-                # fallback
-                base_pos = (WORLD_W/2, WORLD_H/2)
-                print("Warning: failed to find suitable base pos for large agents, using center.")
-            # 生成多个相互接近的大节点
-            for i in range(num):
-                for _ in range(300):
-                    angle = random.uniform(0, 2 * math.pi)
-                    r = random.uniform(0, 30)
-                    x = base_pos[0] + r * math.cos(angle)
-                    y = base_pos[1] + r * math.sin(angle)
-
-                    # 边界约束
-                    x = clamp(x, 0, WORLD_W)
-                    y = clamp(y, 0, WORLD_H)
-
-                    if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
-                        self.large_agents.append(LargeAgent(i, x, y,\
-                                                            multi_behavior=ERRTFrontierAssignmentBehavior(),
-                                                            behavior=ExploreBehavior()))
-                        break
-                else:
-                    # 如果找不到合适位置，则直接使用base_pos附近
-                    self.large_agents.append(LargeAgent(i, base_pos[0] + random.uniform(-10, 10),
-                                                        base_pos[1] + random.uniform(-10, 10),
-                                                        multi_behavior=ERRTFrontierAssignmentBehavior(),
-                                                        behavior=ExploreBehavior()))
-        if self.large_agents:
-            brain_node = min(self.large_agents, key=lambda a: a.id)
-            brain_node.is_brain = True
-            self.brain_id = brain_node.id
-
-    def spawn_agents(self, num=5):
-        # free space
-        # near large agents
-        if not self.large_agents:
-            raise ValueError("No large agents available to spawn agents around.")
-
-        self.agents = []
         for i in range(num):
-            attempts = 0
-            while attempts < 100:  # 最多尝试 100 次
-                # 随机选择一个大节点
-                large_agent = random.choice(self.large_agents)
-                # 在大节点周围生成随机偏移
-                offset_x = random.uniform(-50, 50)  # 偏移范围可根据需求调整
-                offset_y = random.uniform(-50, 50)
-                x = clamp(large_agent.pos[0] + offset_x, 0, WORLD_W)
-                y = clamp(large_agent.pos[1] + offset_y, 0, WORLD_H)
-                # 检查是否在自由空间中
-                if not self.is_in_obstacle(x, y) and not self.is_in_danger(x, y):
-                    # 创建小节点
-                    self.agents.append(AgentBase(i + 1000, x, y, behavior=ExploreBehavior()))
-                    break
-                attempts += 1
-            else:
-                print(f"Failed to generate agent {i} in free space after 100 attempts.")
+            x, y = bx, by
+            la = LargeAgent(i, x, y)
+            # 为每个 large 生成 3 台 small
+            for k in range(3):
+                sx, sy = bx, by
+                sa = AgentBase(
+                    id=small_global_id,
+                    x=sx,
+                    y=sy,
+                    sensor_range=SENSOR_SMALL,
+                    is_large=False
+                )
+                sa.father_id = i
+                la.son_ids.append(small_global_id)
+                self.agents.append(sa)
+                small_global_id += 1
+            self.large_agents.append(la)
+        # 分发给所有大/小机器人
+        for la in self.large_agents:
+            la.local_map = init_map.copy()
+            la.known_map = init_map.copy()
+
+        for sa in self.agents:
+            sa.local_map = init_map.copy()
+        self.brain.local_map = init_map.copy()
+        self.brain.known_map = init_map.copy()
+
+
+    def find_agent_by_id(self, id_):
+        if id_ is None:
+            # print(f"Warning: find_agent_by_id called {id_} with None id")
+            return None
+        for a in self.agents + self.large_agents:
+            if a.id == id_:
+                return a
+        return None
+
+
+    def spawn_reinforcement_agent(self):
+        # TODO
+        pass
 
     def place_victim(self):
         """生成距离大脑节点最远且A*可达的victim"""
@@ -304,6 +291,132 @@ class World:
                         fscore[(nx, ny)] = ng + abs(nx - goal[0]) + abs(ny - goal[1])
                         heapq.heappush(open_set, (fscore[(nx, ny)], (nx, ny)))
         return None
+
+    def update(self, dt, comms: Communication, now_time):
+        """主仿真循环，每一帧调用一次"""
+
+        # 0. 更新时间
+        self.time += dt
+
+        # 1. 更新所有机器人本地观测（small/middle/large 统一）
+        for a in self.agents + self.large_agents:
+            if a.alive:
+                a.update_local_map_from_sensing(self)
+
+        victim_pos = self.victim.pos
+        victim_cell = cell_of_pos(victim_pos)
+        for la in self.large_agents:
+            if la.known_map[victim_cell[1], victim_cell[0]] != UNKNOWN:
+                self.victim.rescued = True
+
+        # 1) 检查哪些节点还活着，选举脑节点
+        dead_agents = [a for a in self.agents if not a.alive]
+        self.wasted_agents.extend(dead_agents)
+        self.agents = [a for a in self.agents if a.alive]
+
+        dead_large = [la for la in self.large_agents if not la.alive and not la.is_brain]
+        self.wasted_large_agents.extend(dead_large)
+        self.large_agents = [la for la in self.large_agents if la.alive]
+        
+        # 通常 brain / large 需要得到全局一致地图
+        for a in self.agents:
+            if a.alive:
+                self.large_agents[a.father_id].known_map = np.maximum(self.large_agents[a.father_id].known_map, a.local_map)
+                self.known_grid = np.maximum(self.known_grid, a.local_map)
+        self.brain.known_map = self.known_grid
+
+            # 3. 全局规划（只有 brain 执行）
+        if (self.brain is not None and 
+            now_time - self.brain.last_reason_time >= BRAIN_REASON_INTERVAL):
+
+            # ======== (A) 区域划分（brain → middle） ========
+            middles = [la for la in self.large_agents 
+                    if la.alive and not la.is_brain]
+
+            region_assign = self.brain.assign_region_to_middle(middles)
+
+            for mid in middles:
+                # region_assign[mid.id] 是 list
+                mid.region = region_assign[mid.id][0]
+
+            # ======== (B) middle → small 规划任务 ========
+            for mid in middles:
+                sons_list = [a for a in self.agents if a.father_id == mid.id]
+
+                assigns = mid.generate_and_dispatch_tasks(
+                    child_agents=sons_list,
+                    comm=None,
+                    region_mask=mid.region,
+                    frontier_cells=None,
+                    num_points=30,
+                    min_dist=4.0,
+                    now_time=now_time
+                )
+
+                # 给 small 分配
+                for son in sons_list:
+                    seq = assigns.get(son.id, [])
+                    son.task_seq = seq[:]
+                    son.has_goal = len(seq) > 0
+                    if son.has_goal:
+                        son.plan_path_sequence(self, comms, now_time)
+
+            # 更新时间戳
+            self.brain.last_reason_time = now_time
+
+        # 5. 所有 agent 执行 step_motion（跟踪各自的 planned_path）
+        for a in self.agents + self.large_agents:
+            if a.alive:
+                a.step_motion()
+                # if not a.is_large
+                self.mark_visited(a.pos[0], a.pos[1],a.is_large)
+        
+        for la in self.large_agents:
+            if la.alive:
+                sons_list = [a for a in self.agents if a.father_id == la .id]
+                la.navigate_to_children_centroid(sons_list,self)
+
+        # 6. 处理死亡 robots（掉入危险区 / 能量耗尽）
+        alive_agents = []
+        for a in self.agents:
+            if not a.alive:
+                self.wasted_agents.append(a)
+            else:
+                alive_agents.append(a)
+        self.agents = alive_agents
+
+        alive_large = []
+        for la in self.large_agents:
+            if not la.alive:
+                self.wasted_large_agents.append(la)
+            else:
+                alive_large.append(la)
+        self.large_agents = alive_large
+
+    def coverage_percentage(self):
+        total = GRID_W * GRID_H
+        # count union of explored cells
+        explored = 0
+        union_set = set()
+        for a in (self.agents + self.large_agents):
+            union_set |= a.get_local_explored_cells()
+        explored = len(union_set)
+        return (explored / total) * 100.0
+
+    def mark_visited(self, x, y, is_large):
+        """记录机器人经过的安全栅格"""
+        cx, cy = cell_of_pos((x, y))
+        if is_large:
+            if 0 <= cx < GRID_W and 0 <= cy < GRID_H and \
+                self.visited_grid[cy, cx] != OBSTACLE and self.visited_grid[cy, cx] != DANGER:
+                self.visited_grid[cy, cx] = FREE
+        else:
+            dirs = [(0,0), (1,0), (-1,0), (0,1), (0,-1)]
+            for dx, dy in dirs:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < GRID_W and 0 <= ny < GRID_H and \
+                    self.visited_grid[ny, nx] != OBSTACLE and self.visited_grid[cy, cx] != DANGER:
+                    self.visited_grid[ny, nx] = FREE
 
     def update_baseline(self, dt, comms:Communication, now_time):
         # Tik
@@ -393,7 +506,6 @@ class World:
 
             # 更新已访问的网格单元
             ci, cj = cell_of_pos(a.pos)
-            self.grid_visited_union.add((ci, cj))
         for la in self.large_agents:
             sense = la.sense(self)
             desired_vx, desired_vy = la.behavior.decide(la, sense, dt)
@@ -407,211 +519,8 @@ class World:
 
             # 更新已访问的网格单元
             ci, cj = cell_of_pos(la.pos)
-            self.grid_visited_union.add((ci, cj))
 
-    def draw(self, screen):
-        # draw explored overlay: union of all agents' explored cells => white, else dark gray
-        explored_union = np.full((GRID_H, GRID_W), False, dtype=bool)
-        for a in (self.agents + self.large_agents + self.wasted_agents + self.wasted_large_agents):
-            explored = (a.local_map != UNKNOWN)
-            explored_union = np.logical_or(explored_union, explored)
-        
-        # explored_union = self.large_agents[self.brain_id].known_map.copy()
-
-        # draw cells
-        for i in range(GRID_W):
-            for j in range(GRID_H):
-                rect = pygame.Rect(i*GRID_CELL, j*GRID_CELL, GRID_CELL, GRID_CELL)
-                if not explored_union[j,i]:
-                    color = (60,60,60)  # unknown gray
-                else:
-                    color = (245,245,245)  # explored white
-                pygame.draw.rect(screen, color, rect)
-
-        # draw obstacles (on top)
-        for obs in self.obstacles:
-            obs.draw(screen)
-        # draw danger zones
-        for dz in self.danger_zones:
-            dz.draw(screen)
-        # draw victim
-        if self.victim:
-            self.victim.draw(screen)
-        # draw agents' traces and bodies
-        for la in self.large_agents + self.wasted_large_agents:
-            # la.draw_hist(screen, color=(200,160,60))
-            la.draw_self(screen)
-            la.draw_goal(screen)
-        for a in self.agents + self.wasted_agents:
-            # a.draw_hist(screen)
-            a.draw_self(screen)
-            a.draw_goal(screen)
-        if self.brain_id is not None:
-            self.draw_brain_and_agent_views(screen,[1, 2])
-
-
-    def draw_brain_and_agent_views(self, screen, agents_to_show_id=None):
-        """在右侧绘制脑节点 known_map + 指定 agent 的 local_map"""
-        sidebar_x = SCREEN_W  # 右侧起始位置
-        sidebar_w = 400
-        sidebar_h = SCREEN_H
-        pygame.draw.rect(screen, (30, 30, 30), (sidebar_x, 0, sidebar_w, sidebar_h))
-
-        # ========= 找到脑节点 =========
-        brain = self.large_agents[self.brain_id] if self.brain_id is not None else None
-        if brain:
-            self._draw_map_on_sidebar(screen, brain.known_map, sidebar_x, 20, title="Brain Known Map")
-
-        # ========= 绘制指定 agent 视图 =========
-        for i in agents_to_show_id or []:
-            if i == self.brain_id:
-                continue
-            agent_to_show_id = i
-            if agent_to_show_id is not None:
-                target_agent = next((a for a in (self.agents + self.large_agents + 
-                                                self.wasted_large_agents + self.wasted_agents) \
-                                    if a.id == agent_to_show_id), None)
-                if target_agent is not None:
-                    self._draw_map_on_sidebar(screen, target_agent.local_map, \
-                                              sidebar_x, (250 + 230*agents_to_show_id.index(i)), title=f"Agent {agent_to_show_id} Local Map")
-
-
-    def _draw_map_on_sidebar(self, screen, grid_map, x_offset, y_offset, title="Map"):
-        """通用绘制函数，用于绘制地图数组"""
-        if grid_map is None:
-            return
-
-        h, w = grid_map.shape
-
-        # 定义颜色表
-        color_map = {
-            UNKNOWN: (40, 40, 40),
-            FREE: (230, 230, 230),
-            OBSTACLE: (100, 100, 100),
-            DANGER: (255, 60, 60),
-            VICTIM: (255, 255, 0)
-        }
-
-        surf = pygame.Surface((w, h))
-        for y in range(h):
-            for x in range(w):
-                val = grid_map[y, x]
-                surf.set_at((x, y), color_map.get(val, (255, 255, 255)))
-
-        # 缩放与绘制
-        scaled = pygame.transform.scale(surf, (360, 200))
-        screen.blit(scaled, (x_offset + 20, y_offset))
-
-        # 边框 + 标题
-        pygame.draw.rect(screen, (255, 255, 255), (x_offset + 20, y_offset, 360, 200), 2)
-        font = pygame.font.SysFont(None, 22)
-        text = font.render(title, True, (255, 255, 255))
-        screen.blit(text, (x_offset + 30, y_offset - 20))
-
-
-    def coverage_percentage(self):
-        total = GRID_W * GRID_H
-        # count union of explored cells
-        explored = 0
-        union_set = set()
-        for a in (self.agents + self.large_agents):
-            union_set |= a.get_local_explored_cells()
-        explored = len(union_set)
-        return (explored / total) * 100.0
-
-
-    def update_data_collect(self, dt, comms:Communication, now_time):
-        self.time += dt
-        # 1) 更新每个代理的感知信息 -> 更新 local_map
-        for a in self.agents + self.large_agents:
-            if not a.alive:
-                continue
-            try:
-                a.update_local_map_from_sensing(self)
-            except Exception as e:
-                print(f"Error updating local map for agent {a.id}: {e}")
-
-        # 2) deliver communications queued
-        deliveries = comms.deliver(now_time)
-        for sender, receiver, msg in deliveries:
-            # msg dispatch
-            if msg.get('type') == 'map_patch':
-                # receiver should integrate patch
-                if isinstance(receiver, LargeAgent):
-                    receiver.integrate_map_patch(msg['patch'])
-            elif msg.get('type') == 'rescue_alert':
-                # receiver may prioritize moving to victim
-                if isinstance(receiver, AgentBase):
-                    receiver.has_goal = True
-                    receiver.goal = msg['pos']
-
-        # 3) Large agents perform reasoning (System 2)
-        for la in self.large_agents:
-            if not la.alive:
-                continue
-            try:
-                # 限制推理频率
-                if now_time - la.last_reason_time >= BRAIN_REASON_INTERVAL:
-                    la.reason_and_assign(self.agents, now_time)
-                    la.last_reason_time = now_time
-
-            except Exception as e:
-                print(f"Error in reasoning or task assignment for large agent {la.id}: {e}")
-
-        # 4) Agents decide & move
-        for a in self.agents:
-            if not a.alive:
-                continue
-            try:
-                sense = a.sense(self)
-                desired_vx, desired_vy = a.behavior.decide(a, sense, dt)
-                # 限制速度范围
-                speed = math.hypot(desired_vx, desired_vy)
-                if speed > AGENT_MAX_SPEED:
-                    scale = AGENT_MAX_SPEED / (speed + 1e-9)
-                    desired_vx *= scale
-                    desired_vy *= scale
-                a.step_motion(desired_vx, desired_vy, dt, self)
-
-                # 更新已访问的网格单元
-                ci, cj = cell_of_pos(a.pos)
-                self.grid_visited_union.add((ci, cj))
-            except Exception as e:
-                print(f"Error in decision or motion for agent {a.id}: {e}")
-        for la in self.large_agents:
-            if not la.alive:
-                continue
-            try:
-                sense = la.sense(self)
-                desired_vx, desired_vy = la.behavior.decide(a, sense, dt)
-                # 限制速度范围
-                speed = math.hypot(desired_vx, desired_vy)
-                if speed > AGENT_MAX_SPEED:
-                    scale = AGENT_MAX_SPEED / (speed + 1e-9)
-                    desired_vx *= scale
-                    desired_vy *= scale
-                la.step_motion(desired_vx, desired_vy, dt, self)
-
-                # 更新已访问的网格单元
-                ci, cj = cell_of_pos(la.pos)
-                self.grid_visited_union.add((ci, cj))
-            except Exception as e:
-                print(f"Error in decision or motion for large agent {la.id}: {e}")
-
-        # 5) periodic communications: small agents send map patches to large agents if within range
-        for a in self.agents:
-            if not a.alive:
-                continue
-            try:
-                for la in self.large_agents:
-                    if not la.alive:
-                        continue
-                    if distance(a.pos, la.pos) <= AGENT_COMM_RANGE:
-                        a.send_map_patch(comms, [la], now_time)
-            except Exception as e:
-                print(f"Error in periodic communication for agent {a.id}: {e}")
-
-    def update(self, dt, comms:Communication, now_time):
+    def _update(self, dt, comms:Communication, now_time):
         # Tik
         # 结束判断
         # 死亡节点确认与剔除
@@ -859,7 +768,6 @@ class World:
 
             # 更新已访问的网格单元
             ci, cj = cell_of_pos(a.pos)
-            self.grid_visited_union.add((ci, cj))
             # except Exception as e:
             #     print(f"Error in decision or motion for agent {a.id}: {e}")
         # (I) Large agents also check assigned goals: ensure safety and request reinforcements if not safe
@@ -887,139 +795,138 @@ class World:
             except Exception:
                 pass
 
+    def draw(self, screen):
+        # draw explored overlay: union of all agents' explored cells => white, else dark gray
+        explored_union = np.full((GRID_H, GRID_W), False, dtype=bool)
+        for a in (self.agents + self.large_agents + self.wasted_agents + self.wasted_large_agents):
+            explored = (a.local_map != UNKNOWN)
+            explored_union = np.logical_or(explored_union, explored)
+        
+        # explored_union = self.large_agents[self.brain_id].known_map.copy()
 
+        # draw cells
+        for i in range(GRID_W):
+            for j in range(GRID_H):
+                rect = pygame.Rect(i*GRID_CELL, j*GRID_CELL, GRID_CELL, GRID_CELL)
+                if not explored_union[j,i]:
+                    color = (60,60,60)  # unknown gray
+                else:
+                    color = (245,245,245)  # explored white
+                pygame.draw.rect(screen, color, rect)
 
-    # ======================== 生成固定位置的参数 ========================
-
-    def generate_fixed_map(self, map_id:int):
-        """
-        根据 map_id (1~10) 生成固定的障碍、危险区、受害者布局。
-        """
-        # 清空原始数据
-        self.obstacles.clear()
-        self.danger_zones.clear()
-        self.ground_grid[:] = FREE
-
-        if map_id == 1:
-            self._add_rect_obstacle(300, 300, 200, 150)
-            self._add_danger(100, 100, 60)
-            self._add_danger(700, 100, 60)
-            self._add_danger(100, 500, 60)
-            self._add_danger(700, 500, 60)
-            self.victim = Victim(300, 500)
-            self.spawn_center = (300, 100)
-
-        elif map_id == 2:
-            for x in range(100, 800, 150):
-                self._add_rect_obstacle(x, 200, 80, 20)
-                self._add_rect_obstacle(x - 50, 400, 80, 20)
-            self._add_danger(400, 300, 100)
-            self.victim = Victim(600, 50)
-            self.spawn_center = (150, 500)
-
-        elif map_id == 3:
-            self._add_rect_obstacle(300, 100, 500, 40)
-            self._add_rect_obstacle(300, 460, 500, 40)
-            self._add_danger(500, 300, 70)
-            self.victim = Victim(750, 300)
-            self.spawn_center = (100, 300)
-
-        elif map_id == 4:
-            for angle in np.linspace(0, 2*np.pi, 8, endpoint=False):
-                x = 400 + 200 * np.cos(angle)
-                y = 300 + 150 * np.sin(angle)
-                self._add_rect_obstacle(x-20, y-20, 40, 40)
-            self._add_danger(400, 300, 50)
-            self.victim = Victim(700, 500)
-            self.spawn_center = (150, 150)
-
-        elif map_id == 5:
-            for y in range(50, 550, 100):
-                self._add_rect_obstacle(400, y, 40, 60)
-            self._add_danger(500, 250, 80)
-            self.victim = Victim(100, 300)
-            self.spawn_center = (700, 100)
-
-        elif map_id == 6:
-            self._add_rect_obstacle(200, 150, 100, 200)
-            self._add_rect_obstacle(600, 150, 100, 200)
-            self._add_danger(400, 300, 90)
-            self.victim = Victim(400, 500)
-            self.spawn_center = (400, 100)
-
-        elif map_id == 7:
-            self._add_rect_obstacle(400, 0, 40, 250)
-            self._add_rect_obstacle(400, 350, 40, 250)
-            self._add_danger(300, 300, 40)
-            self.victim = Victim(750, 300)
-            self.spawn_center = (150, 300)
-
-        elif map_id == 8:
-            for _ in range(10):
-                x = random.randint(100, 700)
-                y = random.randint(100, 500)
-                self._add_rect_obstacle(x, y, 30, 30)
-            self._add_danger(100, 350, 60)
-            self.victim = Victim(100, 100)
-            self.spawn_center = (100, 500)
-
-        elif map_id == 9:
-            self._add_rect_obstacle(300, 0, 40, 300)
-            self._add_rect_obstacle(300, 300, 400, 40)
-            self._add_danger(650, 200, 75)
-            self.victim = Victim(450, 150)
-            self.spawn_center = (150, 150)
-
-        elif map_id == 10:
-            self._add_rect_obstacle(250, 200, 400, 40)
-            self._add_rect_obstacle(250, 400, 400, 40)
-            self._add_danger(400, 300, 60)
-            self.victim = Victim(750, 550)
-            self.spawn_center = (100, 100)
-
-        else:
-            raise ValueError("Invalid map_id, must be 1~10")
-
-        # 更新 ground_grid 状态
-        self._update_ground_grid()
-
-        print(f"✅ Fixed map {map_id} loaded.")
-
-    # ======================== 辅助函数 ========================
-    def _add_rect_obstacle(self, x, y, w, h):
-        obs = Obstacle(x, y, w, h)
-        self.obstacles.append(obs)
-
-    def _add_danger(self, x, y, r):
-        dz = DangerZone(x, y, r)
-        self.danger_zones.append(dz)
-
-    def _update_ground_grid(self):
-        """根据当前障碍物和危险区更新 ground_grid"""
-        self.ground_grid[:] = FREE
+        # draw obstacles (on top)
         for obs in self.obstacles:
-            left = int(obs.rect.left // GRID_CELL)
-            right = int(obs.rect.right // GRID_CELL)
-            top = int(obs.rect.top // GRID_CELL)
-            bottom = int(obs.rect.bottom // GRID_CELL)
-            for i in range(left, right):
-                for j in range(top, bottom):
-                    if 0 <= i < GRID_W and 0 <= j < GRID_H:
-                        self.ground_grid[j, i] = OBSTACLE
+            obs.draw(screen)
+        # draw danger zones
         for dz in self.danger_zones:
-            cx, cy = dz.pos
-            for i in range(GRID_W):
-                for j in range(GRID_H):
-                    gx, gy = pos_of_cell(i, j)
-                    if math.hypot(gx - cx, gy - cy) < dz.r:
-                        self.ground_grid[j, i] = DANGER
+            dz.draw(screen)
+        overlay = pygame.Surface((GRID_CELL, GRID_CELL), pygame.SRCALPHA)
 
+        for i in range(GRID_W):
+            for j in range(GRID_H):
 
-    def find_agent_by_id(self, id_):
-        if id_ is None:
-            # print(f"Warning: find_agent_by_id called {id_} with None id")
-            return None
-        for a in self.agents + self.large_agents:
-            if a.id == id_:
-                return a
-        return None
+                if self.visited_grid[j, i] == FREE:
+                    overlay.fill((120, 180, 255, 90))  # light blue w/ alpha
+                    screen.blit(overlay, (i*GRID_CELL, j*GRID_CELL))
+        # draw victim
+        if self.victim:
+            self.victim.draw(screen)
+        # draw agents' traces and bodies
+        for la in self.large_agents + self.wasted_large_agents:
+            # la.draw_hist(screen, color=(200,160,60))
+            la.draw_self(screen)
+            la.draw_goal(screen)
+        for a in self.agents + self.wasted_agents:
+            # a.draw_hist(screen)
+            a.draw_self(screen)
+            a.draw_goal(screen)
+        if self.brain_id is not None:
+            self.draw_brain_and_agent_views(screen,[1, 2])
+
+    def draw_brain_and_agent_views(self, screen, agents_to_show_id=None):
+        """在右侧绘制脑节点 known_map + 指定 agent 的 local_map"""
+        sidebar_x = SCREEN_W  # 右侧起始位置
+        sidebar_w = 400
+        sidebar_h = SCREEN_H
+        pygame.draw.rect(screen, (30, 30, 30), (sidebar_x, 0, sidebar_w, sidebar_h))
+
+        # ========= 找到脑节点 =========
+        brain = self.large_agents[self.brain_id] if self.brain_id is not None else None
+        if brain:
+            self._draw_map_on_sidebar(screen, brain.known_map, sidebar_x, 20, title="Brain Known Map")
+
+        # ========= 绘制指定 agent 视图 =========
+        for i in agents_to_show_id or []:
+            if i == self.brain_id:
+                continue
+            agent_to_show_id = i
+            if agent_to_show_id is not None:
+                target_agent = next((a for a in (self.agents + self.large_agents + 
+                                                self.wasted_large_agents + self.wasted_agents) \
+                                    if a.id == agent_to_show_id), None)
+                if target_agent is not None:
+                    self._draw_map_on_sidebar(screen, target_agent.local_map, \
+                                              sidebar_x, (250 + 230*agents_to_show_id.index(i)), title=f"Agent {agent_to_show_id} Local Map")
+
+    def _draw_map_on_sidebar(self, screen, grid_map, x_offset, y_offset, title="Map"):
+        """通用绘制函数，用于绘制地图数组"""
+        if grid_map is None:
+            return
+
+        h, w = grid_map.shape
+
+        # 定义颜色表
+        color_map = {
+            UNKNOWN: (40, 40, 40),
+            FREE: (230, 230, 230),
+            OBSTACLE: (100, 100, 100),
+            DANGER: (255, 60, 60),
+            VICTIM: (255, 255, 0)
+        }
+
+        surf = pygame.Surface((w, h))
+        for y in range(h):
+            for x in range(w):
+                val = grid_map[y, x]
+                surf.set_at((x, y), color_map.get(val, (255, 255, 255)))
+
+        # 缩放与绘制
+        scaled = pygame.transform.scale(surf, (360, 200))
+        screen.blit(scaled, (x_offset + 20, y_offset))
+
+        # 边框 + 标题
+        pygame.draw.rect(screen, (255, 255, 255), (x_offset + 20, y_offset, 360, 200), 2)
+        font = pygame.font.SysFont(None, 22)
+        text = font.render(title, True, (255, 255, 255))
+        screen.blit(text, (x_offset + 30, y_offset - 20))
+
+    def debug_verify_map_fusion(self):
+        """
+        检查：子节点中的已知格子是否仍然在父节点里是 UNKNOWN
+        如果有，说明融合失败。
+        """
+        for la in self.large_agents:
+            father = la
+            father_map = father.known_map
+
+            # 遍历该 large 的所有子 small
+            for sid in la.son_ids:
+                child = next((a for a in self.agents if a.id == sid), None)
+                if child is None:
+                    continue
+                child_map = child.local_map
+
+                # 找出现 "child 已知但 parent 仍未知" 的点
+                bad = np.where((child_map != UNKNOWN) & (father_map == UNKNOWN))
+
+                if len(bad[0]) > 0:
+                    print(f"\n[DEBUG][MAP FUSION ERROR] Child {sid} → Father {la.id}")
+                    print(f"  Count of missed cells: {len(bad[0])}")
+                    # 打印前 5 个坐标示例
+                    for i in range(min(5, len(bad[0]))):
+                        ci = bad[0][i]
+                        cj = bad[1][i]
+                        print(f"    At cell ({ci},{cj}) child={child_map[ci,cj]}, father=UNKNOWN")
+                    print("------------------------------------------------------")
+                else:
+                    print(f"[DEBUG] Child {sid} merged into Father {la.id} SUCCESSFULLY.")

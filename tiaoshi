@@ -1,0 +1,315 @@
+import matplotlib.pyplot as plt
+import numpy as np
+
+def plot_map_with_points(map_array, points, title="地图与点位"):
+    """
+    在地图上绘制点
+    points: 点列表，每个点是(x,y)坐标或(row,col)坐标
+    """
+    plt.figure(figsize=(10, 8))
+    
+    # 显示地图
+    plt.imshow(map_array, cmap='viridis', interpolation='nearest')
+    plt.colorbar(label='地图值')
+    
+    # 提取点坐标
+    if points and len(points) > 0:
+        # 假设points是[(x1,y1), (x2,y2), ...]格式
+        x_coords = [p[0] for p in points]
+        y_coords = [p[1] for p in points]
+        
+        # 绘制点
+        plt.scatter(x_coords, y_coords, c='red', s=100, marker='o', 
+                   edgecolors='white', linewidth=2, label='点位')
+        
+        # 可选：在点上添加编号
+        for i, (x, y) in enumerate(points):
+            plt.text(x, y, str(i), color='white', 
+                    ha='center', va='center', fontweight='bold')
+    
+    plt.title(title)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.show()
+
+# 使用示例
+points = [(10, 15), (20, 25), (30, 35)]  # 你的点坐标
+plot_map_with_points(your_map_array, points, "我的地图与关键点")
+
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+def plot_numpy_array(arr, title="Numpy Array Visualization"):
+    """
+    绘制numpy数组的热力图
+    """
+    plt.figure(figsize=(10, 8))
+    
+    # 使用imshow显示数组
+    plt.imshow(arr, cmap='viridis', interpolation='nearest')
+    plt.colorbar(label='数值')
+    plt.title(title)
+    plt.xlabel('X轴')
+    plt.ylabel('Y轴')
+    
+    # 在格子上显示数值（适用于小数组）
+    if arr.shape[0] <= 20 and arr.shape[1] <= 20:  # 只在数组较小时显示数值
+        for i in range(arr.shape[0]):
+            for j in range(arr.shape[1]):
+                plt.text(j, i, f'{arr[i, j]:.1f}', 
+                        ha='center', va='center', color='white' if arr[i, j] > 0.5 else 'black')
+    
+    plt.tight_layout()
+    plt.show()
+
+# 使用示例
+plot_numpy_array(your_array, "地图状态")
+
+
+"""
+regions_sorted可视化的分数
+"""
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+def visualize_score_on_map(known_map, regions_sorted):
+    """
+    在地图上可视化区域得分
+    """
+    H, W = known_map.shape
+    
+    # 创建得分图层
+    score_map = np.zeros((H, W))
+    
+    # 将每个区域的得分值填充到对应bbox区域
+    for region in regions_sorted:
+        bbox = region['bbox']
+        r0, r1, c0, c1 = bbox
+        score = region['score']
+        
+        # 在bbox区域内填充得分值
+        score_map[r0:r1, c0:c1] = score
+    
+    # 创建可视化
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # 左侧：原始地图
+    ax1.imshow(known_map, cmap='gray')
+    ax1.set_title('原始地图')
+    
+    # 右侧：得分热力图叠加
+    # 显示原始地图作为背景
+    ax2.imshow(known_map, cmap='gray', alpha=0.5)
+    
+    # 显示得分热力图
+    im = ax2.imshow(score_map, cmap='hot', alpha=0.7)
+    
+    # 在每个区域中心标注得分值
+    for i, region in enumerate(regions_sorted):
+        bbox = region['bbox']
+        r0, r1, c0, c1 = bbox
+        score = region['score']
+        
+        # 计算区域中心
+        center_r = (r0 + r1) // 2
+        center_c = (c0 + c1) // 2
+        
+        # 标注得分值
+        ax2.text(center_c, center_r, f'{score:.4f}', 
+                fontsize=8, ha='center', va='center',
+                bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8))
+        
+        # 绘制区域边界框
+        rect = plt.Rectangle((c0, r0), c1-c0, r1-r0, 
+                           fill=False, edgecolor='blue', linewidth=1)
+        ax2.add_patch(rect)
+    
+    ax2.set_title('区域得分热力图')
+    plt.colorbar(im, ax=ax2, label='得分值')
+    
+    plt.tight_layout()
+    plt.show()
+
+# 使用示例
+visualize_score_on_map(self.known_map, regions_sorted)
+
+
+
+"""
+可视化中机器人的分配的字典
+"""
+import matplotlib.pyplot as plt
+import numpy as np
+
+def visualize_assignments_on_map(known_map, assignments, robot_positions=None):
+    """
+    在地图上可视化机器人目标点分配
+    
+    参数:
+    - known_map: 已知地图的2D数组
+    - assignments: 字典，键为机器人ID，值为目标点列表
+    - robot_positions: 字典，键为机器人ID，值为当前位置坐标
+    """
+    # 创建图形
+    plt.figure(figsize=(12, 10))
+    
+    # 1. 首先绘制原始地图
+    # 创建彩色地图（根据你的地图值定义）
+    colored_map = np.zeros((*known_map.shape, 3))
+    
+    # 定义颜色映射（根据你的实际地图值调整）
+    # 假设你的地图值有这些常量
+    UNKNOWN = 0
+    FREE = 1
+    OBSTACLE = 2
+    VICTIM = 3
+    
+    # 为不同地图值分配颜色
+    colored_map[known_map == UNKNOWN] = [0.7, 0.7, 0.7]    # 灰色 - 未知区域
+    colored_map[known_map == FREE] = [1, 1, 1]             # 白色 - 自由区域
+    colored_map[known_map == OBSTACLE] = [0, 0, 0]         # 黑色 - 障碍物
+    colored_map[known_map == VICTIM] = [1, 0.5, 0.5]       # 浅红色 - 受害者
+    
+    # 显示地图
+    plt.imshow(colored_map)
+    
+    # 2. 为每个机器人分配不同颜色
+    colors = ['red', 'blue', 'green', 'orange', 'purple']
+    
+    # 3. 绘制每个机器人的目标点和路径
+    for i, (robot_id, targets) in enumerate(assignments.items()):
+        if i < len(colors):
+            color = colors[i]
+        else:
+            # 如果机器人数量超过颜色数量，使用随机颜色
+            color = np.random.rand(3,)
+        
+        # 提取目标点坐标
+        for i in range(len(targets)):
+            x,y = cell_of_pos(targets[i])
+            targets[i] = (x,y)
+        if len(targets) > 0:
+            x_coords = [p[0] for p in targets]
+            y_coords = [p[1] for p in targets]
+            
+            # 绘制目标点（大圆点）
+            plt.scatter(x_coords, y_coords, color=color, s=120, 
+                       marker='o', edgecolors='white', linewidth=2, 
+                       label=f'Robot {robot_id} Targets', zorder=5)
+            
+            # 绘制路径线（按顺序连接）
+            plt.plot(x_coords, y_coords, color=color, linewidth=3, 
+                    alpha=0.7, linestyle='-', zorder=4)
+            
+            # 在每个目标点上标注序号
+            for j, (x, y) in enumerate(targets):
+                plt.text(x, y, f'{j}', fontsize=10, ha='center', va='center',
+                        bbox=dict(boxstyle="circle,pad=0.3", facecolor=color, alpha=0.8),
+                        zorder=6, fontweight='bold', color='white')
+    
+    # 5. 添加图例和标题
+    plt.legend(loc='upper right', fontsize=10)
+    plt.grid(True, alpha=0.3)
+    
+    # 7. 添加地图图例
+    from matplotlib.patches import Patch
+    plt.legend(handles=legend_elements, loc='upper left')
+    
+    plt.tight_layout()
+    plt.show()
+
+# 调用可视化函数
+visualize_assignments_on_map(self.known_map, assignments)
+
+"""
+env里面查看分配情况
+"""
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+
+def visualize_region_assign_debug(grid_map, region_assign):
+    """
+    使用 Matplotlib 可视化 region_assign 字典
+    grid_map: 原始地图 (H, W)
+    region_assign: { agent_id: [mask1, mask2, ...], ... }
+    """
+    h, w = grid_map.shape
+    
+    # 1. 绘制底图 (障碍物黑色，空地白色)
+    plt.figure(figsize=(10, 10))
+    plt.imshow(grid_map, cmap='gray_r', interpolation='nearest')
+    
+    # 定义一些半透明颜色 (RGBA)，用于区分不同的大机器人 ID
+    # 格式: (R, G, B, Alpha)
+    colors = [
+        (1.0, 0.0, 0.0, 0.4),  # ID 0: 红色
+        (0.0, 1.0, 0.0, 0.4),  # ID 1: 绿色
+        (0.0, 0.0, 1.0, 0.4),  # ID 2: 蓝色
+        (1.0, 1.0, 0.0, 0.4),  # ID 3: 黄色
+        (0.0, 1.0, 1.0, 0.4)   # ID 4: 青色
+    ]
+    
+    legend_patches = []
+
+    # 2. 遍历字典进行叠加
+    for large_agent_id, mask_list in region_assign.items():
+        #以此 ID 循环取颜色
+        color = colors[large_agent_id % len(colors)]
+        
+        # 创建一个全透明的图层
+        layer = np.zeros((h, w, 4))
+        
+        # 合并该 ID 下所有的 mask (List 中的所有 mask 取 OR)
+        combined_mask = np.zeros((h, w), dtype=bool)
+        for mask in mask_list:
+            combined_mask = np.logical_or(combined_mask, mask)
+            
+        # 将 mask 为 True 的地方填上颜色
+        layer[combined_mask] = color
+        
+        # 叠加显示
+        plt.imshow(layer, interpolation='nearest')
+        
+        # 添加图例说明
+        patch = mpatches.Patch(color=color, label=f'Large Agent {large_agent_id}')
+        legend_patches.append(patch)
+
+    plt.title("Region Assignment Visualization")
+    plt.legend(handles=legend_patches, bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(False)
+    plt.show()
+
+# ==========================================
+# 模拟数据测试 (Mock Data)
+# ==========================================
+if __name__ == "__main__":
+    # 1. 创建一个 50x50 的空地图
+    W, H = 50, 50
+    test_map = np.zeros((H, W)) # 0 for free
+    
+    # 2. 模拟你的 debugger 截图中的数据结构
+    # region_assign = {0: [mask...], 1: [mask...]}
+    
+    # 模拟 Agent 0 的 mask (左上角区域)
+    mask_0_a = np.zeros((H, W), dtype=bool)
+    mask_0_a[5:20, 5:20] = True
+    
+    # 模拟 Agent 1 的 masks (这是一个列表，包含两个分开的区域)
+    mask_1_a = np.zeros((H, W), dtype=bool)
+    mask_1_a[25:40, 25:40] = True # 右下
+    
+    mask_1_b = np.zeros((H, W), dtype=bool)
+    mask_1_b[25:35, 5:15] = True  # 左下
+    
+    mock_region_assign = {
+        0: [mask_0_a],            # 列表里有一个 mask
+        1: [mask_1_a, mask_1_b]   # 列表里有两个 mask
+    }
+
+visualize_region_assign_debug(test_map, mock_region_assign)

@@ -3,221 +3,40 @@ import random
 import math
 import time
 import numpy as np
+import heapq
 
 from behaviors import *
 from utils import *
-# -----------------------------
-# Agent（小节点）类
-# 全知的AgentBase，LargeAgent继承自此类
-# -----------------------------
-
-class oldAgentBase:
-    def __init__(self, id_, x, y, sensor_range=SENSOR_SMALL, is_large=False, behavior=None):
-        self.id = id_
-        self.pos = (x, y)
-        angle = random.random()*2*math.pi
-        self.vel = (math.cos(angle)*10.0, math.sin(angle)*10.0)  # px/sec initial drift
-        self.alive = True
-        self.sensor_range = sensor_range
-        self.local_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
-        self.has_goal = False
-        self.goal = None  # waypoint in world coords
-        self.comm_ok = True
-        self.father_id = None  # LargeAgent id
-        self.son_ids = []  # assigned small Agent ids
-        self.hist = [self.pos]
-        self.is_large = is_large  # LargeAgent flag
-        # default behavior
-        if behavior is not None:
-            self.behavior = behavior
-        else:
-            self.behavior = ReactiveBehavior() if not is_large else ExploreBehavior()
-
-    # 环境感知：返回用于行为决策的局部信息（近障碍、危险区、victim）
-    def sense(self, env):
-        near_obstacles = []
-        near_dangers = []
-        victim_seen = False
-        # obstacles: use closest point distance
-        for obs in env.obstacles:
-            cx = clamp(self.pos[0], obs.rect.left, obs.rect.right)
-            cy = clamp(self.pos[1], obs.rect.top, obs.rect.bottom)
-            d = distance((cx, cy), self.pos)
-            if d <= self.sensor_range:
-                near_obstacles.append(((cx, cy), d))
-        for dz in env.danger_zones:
-            d = distance(self.pos, dz.pos)
-            if d <= self.sensor_range + dz.r:
-                near_dangers.append((dz.pos, d, dz.r))
-        # victim
-        if distance(self.pos, env.victim.pos) <= self.sensor_range:
-            victim_seen = True
-        return {'near_obstacles': near_obstacles, 'near_dangers': near_dangers, 'victim_seen': victim_seen}
-
-    def update_local_map_from_sensing(self, env):
-        cx, cy = int(self.pos[0]), int(self.pos[1])
-        r = int(self.sensor_range)
-        min_i = max(0, (cx - r)//GRID_CELL)
-        max_i = min(GRID_W-1, (cx + r)//GRID_CELL)
-        min_j = max(0, (cy - r)//GRID_CELL)
-        max_j = min(GRID_H-1, (cy + r)//GRID_CELL)
-        for i in range(min_i, max_i+1):
-            for j in range(min_j, max_j+1):
-                gx, gy = pos_of_cell(i, j)
-                if self.local_map[j, i] != UNKNOWN: # 只更新未知区域
-                    continue
-                if math.hypot(gx - cx, gy - cy) <= r:
-                    val = env.ground_grid[j, i]
-                    # ✅ 不写入危险区，只写障碍物或可通行
-                    if val == OBSTACLE:
-                        self.local_map[j, i] = OBSTACLE
-                    elif val == FREE or val == VICTIM:
-                        self.local_map[j, i] = val
-                    elif val == DANGER:
-                        # 如果是 DANGER → 留FREE，没法成功探测出来
-                        self.local_map[j, i] = FREE
-
-    def get_local_explored_cells(self):
-        """返回该agent已探索（非UNKNOWN）的格子集合（i,j）"""
-        inds = np.where(self.local_map != UNKNOWN)
-        return set(zip(inds[0].tolist(), inds[1].tolist()))
-
-    def step_motion(self, desired_vx, desired_vy, dt, env):
-        """基于期望速度更新位置并处理障碍碰撞、边界、危险区检测"""
-        if not self.alive:
-            return
-        # clamp speed length
-        speed = math.hypot(desired_vx, desired_vy)
-        if speed > AGENT_MAX_SPEED:
-            scale = AGENT_MAX_SPEED / (speed + 1e-9)
-            desired_vx *= scale
-            desired_vy *= scale
-        new_x = self.pos[0] + desired_vx * dt
-        new_y = self.pos[1] + desired_vy * dt
-
-        new_pos = (clamp(new_x, 2, WORLD_W-2), clamp(new_y, 2, WORLD_H-2))
-
-        # obstacle collision simple handling: if new point inside obstacle, attempt axis-projection
-        collided = False
-        for obs in env.obstacles:
-            if obs.rect.collidepoint(new_pos):
-                collided = True
-                alt1 = (new_pos[0], self.pos[1])
-                alt2 = (self.pos[0], new_pos[1])
-                if not obs.rect.collidepoint(alt1):
-                    new_pos = alt1
-                elif not obs.rect.collidepoint(alt2):
-                    new_pos = alt2
-                else:
-                    new_pos = self.pos
-                break
-
-        self.pos = new_pos
-        self.vel = (desired_vx, desired_vy)
-        self.hist.append(self.pos)
-
-        # check danger
-        for dz in env.danger_zones:
-            if dz.contains(self.pos):
-                self.alive = False
-                print(f"[{time.time():.2f}] Agent {self.id} 被危险区摧毁 at {self.pos}")
-                break
-
-        # check victim rescue
-        if distance(self.pos, env.victim.pos) <= GRID_CELL and not env.victim.rescued:
-            env.victim.rescued = True
-            print(f"[{time.time():.2f}] Agent {self.id} 找到并救援了被困者！")
-
-    def send_map_patch(self, comms, targets, now_time, radius=None):
-        """向 targets 发送本地地图的补丁（稀疏表示）"""
-        # pack as list of (i,j,val) for explored cells near agent to limit bandwidth
-        explored = self.get_local_explored_cells()
-        patch = []
-        # limit patch to cells within a radius (in cells)
-        if radius is None:
-            radius = int(self.sensor_range // GRID_CELL) + 2
-        ci, cj = cell_of_pos(self.pos)
-        for (i,j) in list(explored):
-            if abs(i-ci) <= radius and abs(j-cj) <= radius:
-                patch.append((i,j,int(self.local_map[i,j])))
-        msg = {'type':'map_patch', 'from':self.id, 'patch':patch, 'pos':self.pos}
-        for t in targets:
-            comms.send(self, t, msg, now_time)
-
-    def draw_hist(self, screen, color=(100,100,255)):
-        if len(self.hist) >= 2:
-            pts = [(int(p[0]), int(p[1])) for p in self.hist]
-            pygame.draw.lines(screen, color, False, pts, 1)
-
-    def draw_self(self, screen, color=(40,120,220)):
-        if not self.alive:
-            pygame.draw.circle(screen, (90,90,90), (int(self.pos[0]), int(self.pos[1])), AGENT_RADIUS)
-            x,y = int(self.pos[0]), int(self.pos[1])
-            pygame.draw.line(screen, (160,160,160), (x-4,y-4),(x+4,y+4),2)
-            pygame.draw.line(screen, (160,160,160), (x-4,y+4),(x+4,y-4),2)
-        else:
-            pygame.draw.circle(screen, color, (int(self.pos[0]), int(self.pos[1])), AGENT_RADIUS)
-            # sensor range (subtle)
-            surf = pygame.Surface((self.sensor_range*2, self.sensor_range*2), pygame.SRCALPHA)
-            pygame.draw.circle(surf, (50,50,50,8), (int(self.sensor_range), int(self.sensor_range)), int(self.sensor_range))
-            screen.blit(surf, (int(self.pos[0]-self.sensor_range), int(self.pos[1]-self.sensor_range)))
-
-    def draw_goal(self, screen):
-        if not self.has_goal or self.goal is None:
-            return
-        """绘制目标点及其连接线"""
-        goal_x, goal_y = int(self.goal[0]), int(self.goal[1])
-        
-        # 1. 绘制从机器人到目标点的连线
-        pygame.draw.line(screen, (200, 200, 50), 
-                         (int(self.pos[0]), int(self.pos[1])), 
-                         (goal_x, goal_y), 2)
-        
-        # 2. 绘制目标点标记（不同形状表示不同类型的目标）
-        if self.is_large:
-            # 大型机器人目标点：带圆圈的十字
-            pygame.draw.circle(screen, (100, 120, 10), (goal_x, goal_y), 8, 2)
-            pygame.draw.line(screen, (100, 120, 10), (goal_x-6, goal_y), (goal_x+6, goal_y), 2)
-            pygame.draw.line(screen, (100, 120, 10), (goal_x, goal_y-6), (goal_x, goal_y+6), 2)
-        else:
-            # 小型机器人目标点：实心三角形
-            points = [
-                (goal_x, goal_y-8),
-                (goal_x-6, goal_y+6),
-                (goal_x+6, goal_y+6)
-            ]
-            pygame.draw.polygon(screen, (200, 200, 50), points)
-        
-        # 3. 绘制距离文本（可选）
-        dist = distance(self.pos, self.goal)
-        if dist > 50:  # 只在距离较远时显示距离，避免遮挡
-            font = pygame.font.SysFont('Arial', 10)
-            dist_text = f"{int(dist)}px"
-            text_surf = font.render(dist_text, True, (200, 200, 50))
-            # 在连线中点显示距离
-            mid_x = (self.pos[0] + goal_x) // 2
-            mid_y = (self.pos[1] + goal_y) // 2
-            screen.blit(text_surf, (mid_x, mid_y))
+from collections import deque
 
 # ===============================
 # Agent（小节点）类
 # ===============================
 class AgentBase:
-    def __init__(self, id_, x, y, sensor_range=SENSOR_SMALL, is_large=False, behavior=None):
-        self.id = id_
+    def __init__(self, id, x, y, sensor_range=SENSOR_SMALL, is_large=False, behavior=None):
+        self.id = id
+        self.is_large = is_large
+        self.alive = True
+        self.energy_cost = 0.0  # 初始能量（可扩展）
+        self.energy_cost_rate = 0.1 if not is_large else 0.2  # 能量消耗速率（可调）
+
+        self.sensor_range = sensor_range
+        self.local_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
+
         self.pos = (x, y)
         angle = random.random() * 2 * math.pi
         self.vel = (math.cos(angle)*10.0, math.sin(angle)*10.0)
-        self.alive = True
-        self.sensor_range = sensor_range
-        self.local_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
+        self.speed = AGENT_MAX_SPEED if not is_large else LARGE_AGENT_MAX_SPEED
+
         self.has_goal = False
         self.goal = None
-        self.comm_ok = True
+        self.planned_path = None
+        self.task_seq = None
+
         self.father_id = None
         self.son_ids = []
         self.hist = [self.pos]
-        self.is_large = is_large
+        
         self.death_prob = 0.8  # ✅ 死亡概率参数（可调）
 
         if behavior is not None:
@@ -280,81 +99,239 @@ class AgentBase:
         inds = np.where(self.local_map != UNKNOWN)
         return set(zip(inds[0].tolist(), inds[1].tolist()))
 
-    # =====================================================
-    # 移动函数 + 概率死亡机制 + 死亡通报
-    # =====================================================
-    def step_motion(self, desired_vx, desired_vy, dt, env):
-        if not self.alive:
+    def plan_path_sequence(self,  env, comms, now_time, unknown_cost=5.0, danger_proximity_penalty=4.0, proximity_radius=2):
+        """
+        为接收到的 task_seq（[(x,y), ...] 世界坐标点序列）规划一条安全且尽量快速的栅格路径序列。
+        - 允许通过 FREE 和 UNKNOWN（但 UNKNOWN 代价更高）。
+        - 禁止通过 OBSTACLE 和 已知 DANGER 格子。
+        - 如果某个目标不可达，会向父节点发送 path_fail / support_request（触发重分配），并返回 False。
+        - 返回: (True, planned_world_path) 或 (False, None)
+        ---
+        依赖/约定：
+        - env.ground_grid[row, col] 表示真实世界栅格（但小机器人只能看到 self.local_map）
+        - self.local_map[row, col] 为 agent 的主观栅格认知（UNKNOWN/FREE/OBSTACLE/DANGER/VICTIM）
+        - cell_of_pos(pos) -> (row, col)
+        - pos_of_cell(col, row) 或 pos_of_cell(x_cell, y_cell) -> (x_world, y_world)
+        （此处使用 pos_of_cell(col, row) 风格会导致混淆；为保证兼容，使用 pos_of_cell(col, row) 的结果前请确保你的项目实现。
+        上文 AgentBase 中使用 pos_of_cell(i, j) 返回 (x,y) 且 i 为列(x)、j 为行(y)。因此下面保持同样调用顺序：pos_of_cell(col, row)）
+        """
+        # neighbor offsets (8-connected)
+        neighs = [(-1, 0), (1, 0), (0, -1), (0, 1),
+                (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+        def cell_traversal_cost(r, c):
+            if not (0 <= r < GRID_H and 0 <= c < GRID_W):
+                return float('inf')
+            val = int(self.local_map[r, c])
+            if val == OBSTACLE or val == DANGER:
+                return float('inf')
+            base = unknown_cost if val == UNKNOWN else 1.0
+
+            # danger proximity penalty (保持原逻辑)
+            prox_pen = 0.0
+            if danger_proximity_penalty > 0 and proximity_radius > 0:
+                for dr in range(-proximity_radius, proximity_radius + 1):
+                    for dc in range(-proximity_radius, proximity_radius + 1):
+                        rr, cc = r + dr, c + dc
+                        if 0 <= rr < GRID_H and 0 <= cc < GRID_W:
+                            if self.local_map[rr, cc] == DANGER:
+                                d = math.hypot(dr, dc)
+                                if d == 0:
+                                    prox_pen += danger_proximity_penalty * 2.0
+                                else:
+                                    prox_pen += danger_proximity_penalty / (d + 1.0)
+            return base + prox_pen
+
+        def astar_multi(start_rc, waypoints_rc):
+            """
+            Multi-goal A* (方案一 state = (r,c,k))
+            start_rc: (row,col)
+            waypoints_rc: [(row,col), ...]
+            """
+            # no waypoints → no path
+            if not waypoints_rc:
+                return None
+
+            # prepare
+            N = len(waypoints_rc)
+            sr, sc = start_rc
+
+            # A* state: (r, c, k)
+            start_state = (sr, sc, 0)
+
+            import heapq
+            open_heap = []
+            heapq.heappush(open_heap, (0, start_state))
+
+            gscore = { start_state: 0.0 }
+            came = {}
+
+            def heuristic(r, c, k):
+                if k >= N:
+                    return 0
+                tr, tc = waypoints_rc[k]
+                return math.hypot(tr - r, tc - c)
+
+            while open_heap:
+                _, (cr, cc, k) = heapq.heappop(open_heap)
+
+                # finish (k==N means all waypoints reached)
+                if k == N:
+                    # reconstruct using came[]
+                    path = []
+                    node = (cr, cc, k)
+                    while node in came:
+                        path.append(node)
+                        node = came[node]
+                    path.append((sr, sc, 0))
+                    path.reverse()
+
+                    # drop k dimension → list[(r,c)]
+                    final_path = [(r, c) for (r, c, _) in path]
+                    return final_path
+
+                for dr, dc in neighs:
+                    nr, nc = cr + dr, cc + dc
+                    if not (0 <= nr < GRID_H and 0 <= nc < GRID_W):
+                        continue
+                    if self.local_map[nr, nc] in (OBSTACLE, DANGER):
+                        continue
+
+                    base_cost = 1
+                    # base_cost = cell_traversal_cost(nr, nc)
+                    step_cost = math.hypot(dr, dc) * base_cost
+
+                    nk = k
+                    if k < N and (nr, nc) == waypoints_rc[k]:
+                        nk = k + 1
+
+                    ns = (nr, nc, nk)
+                    tentative = gscore[(cr, cc, k)] + step_cost
+
+                    if ns not in gscore or tentative < gscore[ns] - 1e-9:
+                        gscore[ns] = tentative
+                        f = tentative + heuristic(nr, nc, nk)
+                        came[ns] = (cr, cc, k)
+                        heapq.heappush(open_heap, (f, ns))
+
+            return None
+
+        # plan from current pos to each waypoint sequentially
+        planned_cells = []
+        cur_pos = self.pos
+        cur_c, cur_r = cell_of_pos(cur_pos)
+        way_rc = [cell_of_pos((t[1],t[0])) for t in self.task_seq]
+        # 使用 multi-goal A* 替换原来逐段 A*
+        planned_cells = astar_multi((cur_r, cur_c), way_rc)
+
+        if planned_cells is None or len(planned_cells) == 0:
+
+            frontiers = []
+            for r in range(GRID_H):
+                for c in range(GRID_W):
+                    if self.local_map[r, c] != FREE:
+                        continue
+                    # if any neighbor is UNKNOWN → frontier
+                    is_frontier = False
+                    for dr, dc in neighs:
+                        rr, cc = r + dr, c + dc
+                        if 0 <= rr < GRID_H and 0 <= cc < GRID_W:
+                            if self.local_map[rr, cc] == UNKNOWN:
+                                is_frontier = True
+                                break
+                    if is_frontier:
+                        frontiers.append((r, c))
+
+            if len(frontiers) == 0:
+                return False, None
+
+            cur_r, cur_c = cell_of_pos(self.pos)
+            frontiers.sort(key=lambda rc: math.hypot(rc[0]-cur_r, rc[1]-cur_c))
+
+            selected_path = None
+            for fr, fc in frontiers:
+                # 原来的 astar 保留，但这里 multi-goal 不适用
+                path_rc = astar_multi((cur_r, cur_c), [(fr, fc)])  # ★ MODIFIED: 用 multi 兼容单目标
+                if path_rc is not None:
+                    selected_path = path_rc
+                    break
+            planned_cells = selected_path
+
+        # -------------------
+        # 原路径转换逻辑保持不变
+        # -------------------
+        planned_world = []
+        for (r, c) in planned_cells:
+            px, py = pos_of_cell(c, r)
+            planned_world.append((px, py))
+
+        self.planned_path = planned_world
+        self.has_goal = True
+
+        if len(planned_world) > 0:
+            self.goal = planned_world[0]
+
+        return True, planned_world
+
+    def step_motion(self):
+        """
+        小智能体的运动逻辑（纯路径跟踪版本）
+        输入路径 = self.planned_path，由外部规划器负责生成。
+        
+        执行顺序：
+        1. 是否有路径
+        2. 生存状态检查（能量）
+        3. 轨迹跟踪（向planned_path[0]移动）
+        """
+
+        # ------------------------------
+        # 无路径：无需移动
+        # ------------------------------
+        if (not self.has_goal) or self.planned_path is None or len(self.planned_path) == 0:
             return
 
-        # 限速
-        speed = math.hypot(desired_vx, desired_vy)
-        if speed > AGENT_MAX_SPEED:
-            scale = AGENT_MAX_SPEED / (speed + 1e-9)
-            desired_vx *= scale
-            desired_vy *= scale
 
-        parent = env.find_agent_by_id(self.father_id)
-        if parent is not None and parent.alive:
-            px, py = parent.pos
-            cx, cy = self.pos
-            parent_vec = np.array([px - cx, py - cy])
-            dist_to_parent = np.linalg.norm(parent_vec)
+        # ------------------------------
+        # 跟踪当前 waypoint
+        # ------------------------------
+        target = self.planned_path[0]
+        tx, ty = target
+        x, y = self.pos
 
-            # 如果距离超过安全范围，加入吸引力（让它更靠近父节点）
-            if dist_to_parent > AGENT_COMM_RANGE * 0.8:
-                dir_to_parent = parent_vec / (dist_to_parent + 1e-6)
-                # 吸引分量，越远吸引越强
-                attraction = 0.25 * (dist_to_parent - AGENT_COMM_RANGE * 0.8)
-                desired_vx += attraction * dir_to_parent[0]
-                desired_vy += attraction * dir_to_parent[1]
+        dx = tx - x
+        dy = ty - y
+        dist = math.hypot(dx, dy)
 
-            # 如果超出最大距离 -> 强制回归（忽略原目标）
-            if dist_to_parent > AGENT_COMM_RANGE * 1.2:
-                dir_to_parent = parent_vec / (dist_to_parent + 1e-6)
-                desired_vx = AGENT_MAX_SPEED * dir_to_parent[0]
-                desired_vy = AGENT_MAX_SPEED * dir_to_parent[1]
-                # 可以标记状态（进入“reconnect模式”）
-                self.state = "RETURN_TO_PARENT"
-            else:
-                self.state = "NORMAL"
+        # 计算移动
+        if dist <= self.speed:
+            # 可以直接到达 waypoint
+            new_x, new_y = tx, ty
+        else:
+            # 按比例移动 speed 距离
+            new_x = x + self.speed * dx / dist
+            new_y = y + self.speed * dy / dist
 
-        new_x = clamp(self.pos[0] + desired_vx * dt, 2, WORLD_W-2)
-        new_y = clamp(self.pos[1] + desired_vy * dt, 2, WORLD_H-2)
-        new_pos = (new_x, new_y)
+        self.pos = (new_x, new_y)
 
-        # 碰撞检测
-        for obs in env.obstacles:
-            if obs.rect.collidepoint(new_pos):
-                alt1 = (new_pos[0], self.pos[1])
-                alt2 = (self.pos[0], new_pos[1])
-                if not obs.rect.collidepoint(alt1):
-                    new_pos = alt1
-                elif not obs.rect.collidepoint(alt2):
-                    new_pos = alt2
-                else:
-                    # stay
-                    new_pos = self.pos
-                break
+        # self.energy -= self.energy_decay_rate * math.hypot(new_x - x, new_y - y)
+        # if self.energy <= 0:
+            # self.energy = 0
+            # return
+        self.energy_cost += self.energy_cost_rate * math.hypot(new_x - x, new_y - y)
 
-        self.pos = new_pos
-        self.vel = (desired_vx, desired_vy)
-        self.hist.append(self.pos)
+        # ------------------------------
+        # 是否到达 waypoint
+        # ------------------------------
+        if math.hypot(new_x - tx, new_y - ty) < 1e-3:
+            # 移除已完成的点
+            self.planned_path.pop(0)
 
-        # ✅ 危险区概率死亡机制
-        for dz in env.danger_zones:
-            if dz.contains(self.pos):
-                if random.random() < self.death_prob:  # 例如 40% 几率死亡
-                    self.alive = False
-                    print(f"[{time.time():.2f}] ⚠ Agent {self.id} 在危险区死亡 at {self.pos}")
-                    # 向附近机器人广播死亡警报
-                    self.broadcast_death_alert(env)
-                    return
-
-        # 救援检测
-        if distance(self.pos, env.victim.pos) <= GRID_CELL and not env.victim.rescued:
-            env.victim.rescued = True
-            print(f"[{time.time():.2f}] ✅ Agent {self.id} 找到并救援了被困者！")
+            # 是否完成整个任务轨迹
+            if len(self.planned_path) == 0:
+                self.has_goal = False
+                self.goal = None
+                return
+            self.goal = self.planned_path[0]
 
     # =====================================================
     # 死亡消息广播
@@ -386,65 +363,6 @@ class AgentBase:
                     if math.hypot(dx, dy) <= r:
                         self.local_map[ny, nx] = DANGER  # ✅ 主观危险区域
 
-    # ------------------------------
-    # 辅助：小节点/大节点的默认行为扩展
-    # ------------------------------
-    def _agent_accept_and_adjust_goal(agent, world, search_radius_cells=3):
-        """
-        接收目标点后在本地地图附近寻找最近的安全格（不在 OBSTACLE）
-        返回 True if adjusted/accepted, False otherwise
-        """
-        if agent.goal is None:
-            return False
-        gx, gy = agent.goal
-        gi, gj = cell_of_pos((gx, gy))
-        H, W = agent.local_map.shape
-        # BFS-like search around target cell for FREE or VICTIM (note agent.local_map uses j,i indexing)
-        best = None
-        for r in range(0, search_radius_cells+1):
-            for di in range(-r, r+1):
-                for dj in range(-r, r+1):
-                    i = gi + di
-                    j = gj + dj
-                    if 0 <= i < W and 0 <= j < H:
-                        val = agent.local_map[j, i]
-                        if val == FREE or val == VICTIM:
-                            # convert back to world pos
-                            px, py = pos_of_cell(i, j)
-                            # safety check vs known brain map/danger if available
-                            best = (px, py)
-                            return_agent_goal = best
-                            agent.goal = best
-                            agent.has_goal = True
-                            return True
-        # cannot find safe local point
-        return False
-
-    def _agent_execute_retreat(agent, world, retreat_distance=30.0):
-        """
-        简单避险：沿速度反向或指向所属大节点退回
-        """
-        # choose vector away from nearest danger center if known (brain)
-        # fallback: reverse current velocity
-        if (agent.vel[0] != 0 or agent.vel[1] != 0):
-            vx, vy = agent.vel
-            nx, ny = -vx, -vy
-        else:
-            nx, ny = random.uniform(-1,1), random.uniform(-1,1)
-
-        nx, ny = normalize((nx, ny))
-        new_x = clamp(agent.pos[0] + nx * retreat_distance, 0, WORLD_W)
-        new_y = clamp(agent.pos[1] + ny * retreat_distance, 0, WORLD_H)
-        agent.pos = (new_x, new_y)
-        # optionally mark local_map around as DANGER in agent's belief
-        try:
-            ci, cj = cell_of_pos(agent.pos)
-            agent.local_map[cj, ci] = DANGER
-        except Exception:
-            pass
-        return
-
-
     def send_map_patch(self, comms, targets, now_time, radius=SENSOR_SMALL):
         """向 targets 发送本地地图的补丁（稀疏表示）"""
         # pack as list of (i,j,val) for explored cells near agent to limit bandwidth
@@ -464,21 +382,6 @@ class AgentBase:
         msg = {'type':'map_patch', 'from':self.id, 'patch':patch, 'pos':self.pos}
         for t in targets:
             comms.send(self, t, msg, now_time)
-
-    def execute_retreat(self):
-        """简单的避险策略：反方向退后一定距离"""
-        vx, vy = -self.vel[0], -self.vel[1]
-        self.pos = (self.pos[0] + vx*5, self.pos[1] + vy*5)
-
-    def request_aid(self, env):
-        """上报死亡/求援信息"""
-        msg = {'type':'death_report', 'from': self.id, 'pos': self.pos}
-        for a in env.agents:
-            if a != self and distance(a.pos, self.pos) < 200:
-                a.handle_death_report(msg)
-
-
-
 
     def draw_hist(self, screen, color=(100,100,255)):
         if len(self.hist) >= 2:
@@ -538,19 +441,20 @@ class AgentBase:
 
 
 class LargeAgent(AgentBase):
-    def __init__(self, id_, x, y, is_brain=False, behavior=None ,multi_behavior=None):
-        super().__init__(id_, x, y, sensor_range=SENSOR_LARGE, is_large=True, behavior=behavior)
+    def __init__(self, id, x, y, is_brain=False, behavior=None ,multi_behavior=None):
+        super().__init__(id, x, y, sensor_range=SENSOR_LARGE, is_large=True, behavior=behavior)
         self.last_reason_time = -10
         self.brain_reason_time = -10
         self.known_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
-        # self.local_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
-        # self.assigned = {}  # agent_id -> waypoint
         self.is_brain = is_brain  # LargeAgent作为脑节点
         if multi_behavior is not None:
             self.multi_behavior = multi_behavior
         else:
             self.multi_behavior = easyFrontierAssignmentBehavior()
         self.brain_planner = BrainGlobalPlanner()
+
+        self.assignments = None
+        self.region = None
 
     def integrate_map_patch(self, patch):
         """将收到的patch应用到自己的known_map"""
@@ -578,15 +482,6 @@ class LargeAgent(AgentBase):
         for i,j in zip(inds[0].tolist(), inds[1].tolist()):
             self.known_map[i,j] = self.local_map[i,j]
 
-    def brain_reason_and_assign(self, agents, now_time):
-        # brain node: global planning
-        if now_time - self.brain_reason_time < BRAIN_REASON_INTERVAL:
-            return
-        self.brain_reason_time = now_time
-        self.fuse_own_sensing()
-        assigns = self.brain_planner.decide(self, agents)
-        return assigns
-
     def reason_and_assign(self, agents, now_time):
         if now_time - self.last_reason_time < BRAIN_REASON_INTERVAL:
             return
@@ -597,49 +492,408 @@ class LargeAgent(AgentBase):
         assigns = self.multi_behavior.decide(self, agents)
         return assigns
 
-    
-# ===============================
+    def inspect_death_spots(self, env):
+        pass
 
-    def _agent_request_aid(agent, world, emergency_type='aid'):
+    def brain_reason_and_assign(self, agents, now_time):
+        # brain node: global planning
+        if now_time - self.brain_reason_time < BRAIN_REASON_INTERVAL:
+            return
+        self.brain_reason_time = now_time
+        self.fuse_own_sensing()
+        assigns = self.brain_planner.decide(self, agents)
+        return assigns
+
+    def sample_candidate_points(self, region_mask, frontier_cells=None, num_points=20, min_dist=5.0):
         """
-        小大节点请求援助的默认实现：发送 message 给其所属 brain node (if known) or broadcast
-        msg format: {'type': 'AID_REQUEST', 'from': agent.id, 'pos': agent.pos, 'urgency': value, 'reason': ...}
+        高级组合采样：
+        - frontier 优先
+        - 基于信息熵/未知概率加权
+        - Poisson Disk 最小间距保证均匀分布
+
+        region_mask: 2D bool array，未探索区域
+        frontier_cells: [(i,j), ...] 前沿格子，可为空
+        num_points: 最终采样点数量
+        min_dist: Poisson Disk 最小间距（格子坐标单位）
         """
-        msg = {'type':'AID_REQUEST', 'from': agent.id, 'pos': agent.pos, 'urgency': 1.0, 'reason': emergency_type}
-        # if agent has father_id / known brain: try to send to brain
-        target = None
-        if getattr(agent, 'father_id', None) is not None:
-            # find brain in world.large_agents list
-            for la in world.large_agents:
-                if la.id == agent.father_id:
-                    target = la
+        H, W = region_mask.shape
+        # --------------------------
+        # 1. 生成候选格子
+        candidate_cells = [(i,j) for i in range(H) for j in range(W) 
+                        if region_mask[i,j] and self.known_map[i,j]==UNKNOWN]
+
+        if not candidate_cells:
+            return []
+
+        # --------------------------
+        # 2. 计算权重
+        weights = np.zeros(len(candidate_cells))
+        
+        # 定义邻域搜索半径
+        search_radius = 3  # 可以调整这个参数
+        
+        for idx, (i, j) in enumerate(candidate_cells):
+            # 统计周围邻域内的未知点数量
+            unknown_count = 0
+            total_cells = 0
+            
+            # 搜索周围的网格
+            for di in range(-search_radius, search_radius + 1):
+                for dj in range(-search_radius, search_radius + 1):
+                    ni, nj = i + di, j + dj
+                    
+                    # 检查边界
+                    if 0 <= ni < H and 0 <= nj < W:
+                        total_cells += 1
+                        # 计算欧氏距离，只考虑圆形邻域
+                        distance = np.sqrt(di*di + dj*dj)
+                        if distance <= search_radius:
+                            # 如果是未知区域，增加计数
+                            if self.known_map[ni, nj] == UNKNOWN:
+                                unknown_count += 1
+            
+            # 计算未知点密度（可选：使用高斯权重衰减）
+            if total_cells > 0:
+                # 方法1: 简单密度计算
+                density = unknown_count / total_cells
+                
+                
+                weights[idx] = density
+
+        # 归一化
+        weights /= weights.sum()
+
+        # --------------------------
+        # 3. 加权随机选择初步候选点
+        num_candidates = min(len(candidate_cells), num_points*3)  # 先挑更多候选
+        chosen_idx = np.random.choice(len(candidate_cells), size=num_candidates, replace=False, p=weights)
+        preliminary_points = [pos_of_cell(j,i) for i,j in np.array(candidate_cells)[chosen_idx]]
+
+        # --------------------------
+        # 4. Poisson Disk 最小间距筛选
+        final_points = []
+        random.shuffle(preliminary_points)
+        for p in preliminary_points:
+            if all(np.hypot(p[0]-q[0], p[1]-q[1]) >= min_dist for q in final_points):
+                final_points.append(p)
+            if len(final_points) >= num_points:
+                break
+
+        return final_points
+
+    def solve_mtsp_and_assign(self, points, child_agents):
+        """
+        修正版 multi-TSP 分配（更均衡）：
+        - 当点数量较少或 agent 很靠近时，使用负载感知的最近分配（避免所有点都给同一个 agent）
+        - 否则使用简单的 k-means 聚类（k = len(child_agents)）把点分为 k 个簇，再把簇分配给离簇心最近的 agent
+        - 每个 agent 内部使用 nearest-neighbor 做路径顺序
+        返回：{child_id: [p1, p2, ...]}
+        """
+        if not child_agents or not points:
+            return {}
+
+        num_agents = len(child_agents)
+        num_points = len(points)
+
+        # helper: nearest-neighbor sort
+        def nn_sort(start, pts):
+            path = []
+            cur = start
+            pts = pts.copy()
+            while pts:
+                nxt = min(pts, key=lambda p: (p[0]-cur[0])**2 + (p[1]-cur[1])**2)
+                path.append(nxt)
+                pts.remove(nxt)
+                cur = nxt
+            return path
+
+        if num_points <= max(8, 2 * num_agents):
+        # If very few points, use load-balanced greedy assignment
+            # initialize
+            assign = {c.id: [] for c in child_agents}
+            loads = {c.id: 0 for c in child_agents}
+            avg_load = max(1, num_points / num_agents)
+            alpha = 0.8  # load penalty factor
+
+            for px, py in points:
+                best_c = None
+                best_score = float('inf')
+                for c in child_agents:
+                    cx, cy = c.pos
+                    d2 = (cx - px)**2 + (cy - py)**2
+                    # score = distance * (1 + alpha * (current_load / avg_load))
+                    score = d2 * (1.0 + alpha * (loads[c.id] / avg_load))
+                    if score < best_score:
+                        best_score = score
+                        best_c = c
+                assign[best_c.id].append((px, py))
+                loads[best_c.id] += 1
+
+            # order within each agent
+            final = {}
+            for cid, pts in assign.items():
+                if pts:
+                    child = next(c for c in child_agents if c.id == cid)
+                    final[cid] = nn_sort(child.pos, pts)
+                else:
+                    final[cid] = []
+            return final
+
+        # Otherwise use simple k-means clustering (k = num_agents)
+        # Initialize centroids by sampling distinct points
+        k = num_agents
+        pts = [tuple(p) for p in points]
+        if len(pts) <= k:
+            # fallback: assign one point per agent as possible, rest by greedy
+            assign = {c.id: [] for c in child_agents}
+            for i, p in enumerate(pts):
+                assign[child_agents[i % k].id].append(p)
+            # remaining none
+            final = {}
+            for cid, pts in assign.items():
+                if pts:
+                    child = next(c for c in child_agents if c.id == cid)
+                    final[cid] = nn_sort(child.pos, pts)
+                else:
+                    final[cid] = []
+            return final
+
+        # random distinct init
+        centroids = random.sample(pts, k)
+        max_iters = 30
+        for _ in range(max_iters):
+            clusters = [[] for _ in range(k)]
+            # assign step: nearest centroid
+            for p in pts:
+                dists = [ (p[0]-cx)**2 + (p[1]-cy)**2 for (cx,cy) in centroids ]
+                idx = int(min(range(k), key=lambda i: dists[i]))
+                clusters[idx].append(p)
+            # update step
+            new_centroids = []
+            changed = False
+            for cl in clusters:
+                if not cl:
+                    # keep old centroid or reinit to a random point
+                    new_centroids.append(random.choice(pts))
+                    continue
+                mx = sum(p[0] for p in cl) / len(cl)
+                my = sum(p[1] for p in cl) / len(cl)
+                new_centroids.append((mx, my))
+            for a,b in zip(centroids, new_centroids):
+                if (a[0]-b[0])**2 + (a[1]-b[1])**2 > 1e-6:
+                    changed = True
                     break
-        if target is None:
-            # fallback: send to brain id in world if available
-            if getattr(world, 'brain_id', None) is not None:
-                try:
-                    target = world.large_agents[world.brain_id]
-                except Exception:
-                    target = None
-        # use world.communication if provided; else directly call handler
-        if target is not None:
-            try:
-                world_comms = getattr(world, 'comms', None)
-                if world_comms is not None:
-                    world_comms.send(agent, target, msg, world.time)
-            except Exception:
-                pass
-        else:
-            # broadcast to all large agents
-            for la in world.large_agents:
-                try:
-                    if getattr(world, 'comms', None):
-                        world.comms.send(agent, la, msg, world.time)
-                except Exception:
-                    pass
-        return
+            centroids = new_centroids
+            if not changed:
+                break
 
-#  ===============================
+        # Now assign clusters to agents by nearest centroid -> agent mapping
+        # compute centroid->best agent
+        centroid_to_agent = [-1]*k
+        used_agents = set()
+        for ci, cen in enumerate(centroids):
+            best_agent = None
+            best_d = float('inf')
+            for ag in child_agents:
+                if ag.id in used_agents:
+                    continue
+                ax, ay = ag.pos
+                d = (ax - cen[0])**2 + (ay - cen[1])**2
+                if d < best_d:
+                    best_d = d
+                    best_agent = ag
+            if best_agent is None:
+                # allow reuse if not enough distinct
+                best_agent = min(child_agents, key=lambda ag: (ag.pos[0]-cen[0])**2 + (ag.pos[1]-cen[1])**2)
+            centroid_to_agent[ci] = best_agent.id
+            used_agents.add(best_agent.id)
+
+        # If k > number of agents (shouldn't), map remaining to nearest agent
+        # Build assignments
+        assign = {c.id: [] for c in child_agents}
+        for ci, cl in enumerate(clusters):
+            aid = centroid_to_agent[ci]
+            if aid not in assign:
+                # find nearest agent id as fallback
+                nearest = min(child_agents, key=lambda ag: (ag.pos[0]-centroids[ci][0])**2 + (ag.pos[1]-centroids[ci][1])**2)
+                aid = nearest.id
+            assign[aid].extend(cl)
+
+        # If any agent ended up with 0 points, do a balancing pass: move nearest point from largest cluster
+        empty_agents = [aid for aid, lst in assign.items() if len(lst) == 0]
+        if empty_agents:
+            # sort agents by load descending
+            loads = sorted(assign.items(), key=lambda kv: -len(kv[1]))
+            for empty_aid in empty_agents:
+                if not loads:
+                    break
+                # take one point from the largest
+                src_aid, src_pts = loads[0]
+                if not src_pts:
+                    loads.pop(0)
+                    continue
+                # pick the point in src_pts that is closest to the empty agent
+                empty_agent = next(ag for ag in child_agents if ag.id == empty_aid)
+                p_best = min(src_pts, key=lambda p: (p[0]-empty_agent.pos[0])**2 + (p[1]-empty_agent.pos[1])**2)
+                assign[empty_aid].append(p_best)
+                src_pts.remove(p_best)
+                # resort loads
+                loads = sorted(assign.items(), key=lambda kv: -len(kv[1]))
+
+        # Final nearest-neighbor ordering per agent
+        final_assign = {}
+        for cid, pts in assign.items():
+            if pts:
+                child = next(c for c in child_agents if c.id == cid)
+                final_assign[cid] = nn_sort(child.pos, pts)
+            else:
+                final_assign[cid] = []
+
+        return final_assign
+
+    def generate_and_dispatch_tasks(self, child_agents, comm, region_mask, frontier_cells=None, num_points=20, min_dist=5.0, now_time=None):
+        """
+        完整任务生成与分发流程：
+        1) 高级组合采样 candidate points
+        2) multi-TSP 分配给 child agents
+        3) 通过 comm 发送 target_assign 消息
+
+        region_mask: LargeAgent 分配的未探索区域
+        child_agents: 该 LargeAgent 的子节点 (M robots)
+        comm: Communication 实例
+        frontier_cells: optional 前沿格子列表
+        num_points: 总采样点数量
+        min_dist: Poisson Disk 最小间距
+        now_time: 当前时间戳
+        """
+        final_points = self.sample_candidate_points(region_mask, frontier_cells, num_points, min_dist)
+        assignments = self.solve_mtsp_and_assign(final_points, child_agents)
+
+        return assignments
+
+    def navigate_to_children_centroid(self, child_agents, env):
+        """
+        导航到所有 child 的几何中心（centroid），如果中心不可行则自动寻找最近安全点。
+        最终调用 A* 并让机器人执行路径。
+        """
+        if not child_agents:
+            return None
+
+        # ----------------------------
+        # 1. 计算几何中心 (centroid)
+        # ----------------------------
+        xs = [c.pos[0] for c in child_agents]
+        ys = [c.pos[1] for c in child_agents]
+        cx = sum(xs) / len(xs)
+        cy = sum(ys) / len(ys)
+        centroid = (cx, cy)
+
+        # ----------------------------
+        # 2. 如果中心可行则使用中心，否则 BFS 向外找最近安全点
+        # ----------------------------
+        target = self._find_safe_target(centroid, env)
+        if target is None:
+            print("[WARN] No safe target found near centroid")
+            return None
+
+        # ----------------------------
+        # 3. A* 寻路
+        # ----------------------------
+        path = self._astar_path(self.pos, target, env)
+        if not path:
+            print("[WARN] A* failed to find path to centroid-safe point")
+            return None
+
+        # ----------------------------
+        # 4. 设置路径，让机器人移动
+        # ----------------------------
+        self.planned_path = path
+        self.goal = target
+        self.has_goal = True
+        return path
+
+
+    # ---------------------------------------------------------
+    # 工具函数：检查点是否安全
+    # ---------------------------------------------------------
+    def _is_safe_cell(self, world, cx, cy):
+        if cx < 0 or cx >= GRID_W or cy < 0 or cy >= GRID_H:
+            return False
+        val = world.visited_grid[cy, cx]
+        return val != OBSTACLE and val != DANGER
+
+
+    # ---------------------------------------------------------
+    # 工具函数：寻找最近安全点（BFS）
+    # ---------------------------------------------------------
+    def _find_safe_target(self, pos, world):
+        px, py = pos
+        sx, sy = cell_of_pos((px, py))
+
+        q = deque([(sx, sy)])
+        visited = set()
+
+        while q:
+            x, y = q.popleft()
+            if (x, y) in visited:
+                continue
+            visited.add((x, y))
+
+            if 0 <= x < GRID_W and 0 <= y < GRID_H:
+                if self._is_safe_cell(world, x, y):
+                    return pos_of_cell(x, y)
+
+            for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
+                q.append((x + dx, y + dy))
+
+        return None
+
+
+    # 工具函数：A* 寻路
+    def _astar_path(self, start_pos, goal_pos, world):
+        sx, sy = cell_of_pos((start_pos[0], start_pos[1]))
+        gx, gy = cell_of_pos((goal_pos[0], goal_pos[1]))
+
+        open_set = []
+        heapq.heappush(open_set, (0, (sx, sy)))
+        came = {}
+        g_score = { (sx, sy): 0 }
+
+        def h(x, y):  # 曼哈顿启发
+            return abs(x - gx) + abs(y - gy)
+
+        while open_set:
+            _, (x, y) = heapq.heappop(open_set)
+
+            if (x, y) == (gx, gy):
+                # reconstruct
+                path = []
+                cur = (x, y)
+                while cur in came:
+                    path.append(pos_of_cell(*cur))
+                    cur = came[cur]
+                path.reverse()
+                return path
+
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
+                (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                nx, ny = x + dx, y + dy
+
+                # 越界 or 危险 or 障碍
+                if not (0 <= nx < GRID_W and 0 <= ny < GRID_H):
+                    continue
+                if not self._is_safe_cell(world, nx, ny):
+                    continue
+
+                tentative = g_score[(x, y)] + 1
+                if (nx, ny) not in g_score or tentative < g_score[(nx, ny)]:
+                    g_score[(nx, ny)] = tentative
+                    priority = tentative + h(nx, ny)
+                    heapq.heappush(open_set, (priority, (nx, ny)))
+                    came[(nx, ny)] = (x, y)
+
+        return None
+
 
     def draw_self(self, screen):
         if self.is_brain:
@@ -658,6 +912,161 @@ class LargeAgent(AgentBase):
             surf = pygame.Surface((AGENT_COMM_RANGE*2, AGENT_COMM_RANGE*2), pygame.SRCALPHA)
             pygame.draw.circle(surf, (200,160,60,30), (AGENT_COMM_RANGE, AGENT_COMM_RANGE), AGENT_COMM_RANGE)
             screen.blit(surf, (x-AGENT_COMM_RANGE, y-AGENT_COMM_RANGE))
+
+
+class BrainAgent(LargeAgent):
+    def __init__(self, id, x, y, is_brain=True, behavior=None, multi_behavior=None):
+        super().__init__(id, x, y, is_brain, behavior, multi_behavior)
+    
+    def partition_and_select_regions(self,
+                                    middles, 
+                                    block_rows=7,
+                                    block_cols=10,
+                                    unknown_thresh=10):
+        """
+        1) 将全图直接划分为 block_rows × block_cols 个大矩形区域
+        2) 对每个区域统计 UNKNOWN 数量
+        3) 若 UNKNOWN 很少，则跳过该块
+        4) 计算该块中心到所有 Middle 的最小距离，作为“可达性”
+        5) 综合评分 = 未知数 / (距离 + 1e-5)
+        6) 返回按评分排序的区域信息（(score, mask, bbox)）
+        """
+
+        H, W = self.known_map.shape
+        km = self.known_map
+
+        # 1. 先收集中层 middle 机器人
+        if len(middles) == 0:
+            return []  # 没有中层就不分区
+
+        # 2. 计算分块大小
+        h_step = H // block_rows
+        w_step = W // block_cols
+
+        regions = []  # 将返回 (score, region_mask, bbox)
+
+        m_poses = []
+        for m in middles:
+            x,y = cell_of_pos(m.pos)
+            m_poses.append((x,y))
+
+        # 3. 遍历所有矩形块
+        for r in range(block_rows):
+            for c in range(block_cols):
+
+                # 3.1 计算块的 bbox
+                r0 = r * h_step
+                r1 = (r+1) * h_step if r < block_rows-1 else H
+
+                c0 = c * w_step
+                c1 = (c+1) * w_step if c < block_cols-1 else W
+
+                block = km[r0:r1, c0:c1]
+
+                # 3.2 统计 UNKNOWN 数量
+                unknown_count = np.sum(block == UNKNOWN)
+                if unknown_count < unknown_thresh:
+                    continue  # 未知太少不值得探索
+
+                # 3.3 计算此区域中心
+                center = np.array([(r0+r1)/2, (c0+c1)/2])
+
+                # 3.4 求所有 middle 到该块中心的最小距离
+                dists = []
+                for pos in m_poses:
+                    pi, pj = pos
+                    d = math.sqrt((pi-center[1])**2 + (pj-center[0])**2)
+                    dists.append(d)
+                min_dist = min(dists) if dists else 9999
+
+                # 3.5 评分：未知越多越高，距离越小越高
+                score = unknown_count/ (min_dist**0.7 + 1e-6)
+
+                # 3.6 mask
+                mask = np.zeros((H, W), dtype=bool)
+                mask[r0:r1, c0:c1] = True
+
+                regions.append({
+                    "score": score,
+                    "mask": mask,
+                    "bbox": (r0, r1, c0, c1),
+                    "unknown": unknown_count,
+                    "dist": min_dist
+                })
+
+        # 4. 按评分排序
+        regions_sorted = sorted(regions, key=lambda x: -x["score"])
+
+        return regions_sorted
+
+
+
+
+    def assign_region_to_middle(self, middles, max_assign_per_middle=1):
+        """
+        给 middle-level LargeAgent 分配探索区域。
+        输入:
+            middles: list of middle-level agents
+            max_assign_per_middle: 每个 middle 最多分配多少个区域
+        输出:
+            { middle_id : [region_mask1, region_mask2, ...] }
+        """
+
+        if not middles:
+            return {}
+
+        # middle 的 ID → 位置
+        middle_pos = {m.id: m.pos for m in middles}
+
+        # 每个 middle 剩余可分配次数
+        remaining_counts = {m.id: max_assign_per_middle for m in middles}
+
+        # 初始化分配结果（每个值是 list，不是单个 mask）
+        assignments = {m.id: [] for m in middles}
+
+        # 获取区域（已按区域价值排序）
+        regions = self.partition_and_select_regions(middles)
+        if not regions:
+            return assignments
+
+        # 开始给区域做分配
+        for region in regions:
+            region_mask = region["mask"]
+
+            # 跳过无效区域
+            ys, xs = np.where(region_mask)
+            if len(xs) == 0:
+                continue
+
+            # 计算区域中心
+            rc_x, rc_y = pos_of_cell(np.mean(xs), np.mean(ys))
+            # region_center = (rc_x, rc_y)
+
+            best_mid = None
+            best_dist = float("inf")
+
+            # 找最近且还没分配满的 middle
+            for mid in middles:
+                if remaining_counts[mid.id] <= 0:
+                    continue
+
+                mx, my = middle_pos[mid.id]
+                d = (mx - rc_x) ** 2 + (my - rc_y) ** 2
+
+                if d < best_dist:
+                    best_dist = d
+                    best_mid = mid.id
+
+            # 如果找到了分配对象
+            if best_mid is not None:
+                assignments[best_mid].append(region_mask)
+                remaining_counts[best_mid] -= 1
+
+            # 如果所有 middle 都满了 → 可以提前结束
+            if all(c <= 0 for c in remaining_counts.values()):
+                break
+
+        return assignments
 
 
 
