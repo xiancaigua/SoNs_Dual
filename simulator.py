@@ -25,19 +25,18 @@ def main(rounds=1):
     pygame.init()
     clock = pygame.time.Clock()
     if VISUALIZE:
-        screen = pygame.display.set_mode((SCREEN_W + 400, SCREEN_H))
+        screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
         pygame.display.set_caption("exploration simulation")
         font = load_font()
 
     # communication system
     comms = Communication(packet_loss=COMM_PACKET_LOSS, delay=COMM_DELAY)
-    
-    # world
-    # if rounds < 100:
-    #     world = World(seed=SEED,world_id=5)
-    # else:
-    #     world = World(seed=SEED)
-    world = World(seed=SEED)
+    map_files = get_map_files("map")
+    # save_filename = f"world_seed_233174_init_state.pkl"
+    save_filename = map_files[rounds//100][1]
+    world = World.load_state(save_filename)
+    # world = World(seed=SEED)
+    # world.save_state(f"world_seed_{SEED}_init_state.pkl")
 
     running = True
     paused = False
@@ -105,7 +104,7 @@ def main(rounds=1):
                 pygame.image.save(final_image, f"simulation_screenshots/success_{timestamp}.png")
             paused = True
             running = False
-        elif len(world.large_agents) == 0:
+        elif len(world.large_agents) == 0 or world.spawn_times >= 100:
             simulation_result = "failure"
             print("All agents destroyed. Mission failed.")
             # 保存失败截图
@@ -147,6 +146,6 @@ def main(rounds=1):
 
 
 if __name__ == "__main__":
-    for i in range(120): 
+    for i in range(500): 
         main(i)
     sys.exit(0)

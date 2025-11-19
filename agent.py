@@ -32,6 +32,7 @@ class AgentBase:
         self.goal = None
         self.planned_path = None
         self.task_seq = None
+        self.hold_state = False
 
         self.father_id = None
         self.son_ids = []
@@ -67,7 +68,11 @@ class AgentBase:
             victim_seen = True
 
         return {'near_obstacles': near_obstacles, 'victim_seen': victim_seen}
-
+    def clear_seq(self):
+        self.has_goal = False
+        self.goal = None
+        self.planned_path = None
+        self.task_seq = None
     # =====================================================
     # 基于真实世界更新local_map（不包含危险区信息）
     # =====================================================
@@ -99,7 +104,7 @@ class AgentBase:
         inds = np.where(self.local_map != UNKNOWN)
         return set(zip(inds[0].tolist(), inds[1].tolist()))
 
-    def plan_path_sequence(self,  env, comms, now_time, unknown_cost=5.0, danger_proximity_penalty=4.0, proximity_radius=2):
+    def plan_path_sequence(self, unknown_cost=5.0, danger_proximity_penalty=4.0, proximity_radius=2):
         """
         为接收到的 task_seq（[(x,y), ...] 世界坐标点序列）规划一条安全且尽量快速的栅格路径序列。
         - 允许通过 FREE 和 UNKNOWN（但 UNKNOWN 代价更高）。
@@ -141,6 +146,34 @@ class AgentBase:
                                 else:
                                     prox_pen += danger_proximity_penalty / (d + 1.0)
             return base + prox_pen
+
+        def _is_safe_area(r, c, world_map):
+            """
+            检查 (r, c) 及其周围 3x3 区域是否包含 OBSTACLE 或 DANGER 区域。
+            这与机器人的暴毙判定保持一致。
+            """
+            GRID_H, GRID_W = world_map.shape # 假设 world_map 是一个 NumPy 数组或类似结构
+
+            # 定义要检查的相对偏移量 (3x3 区域)
+            # 这里的 dx, dy 应该是 [-1, 0, 1] 的所有组合
+            shifts = [[1, 0], [-1, 0], [0, 1], [0, -1], [0, 0]]
+            for shift in shifts:
+                # 检查邻居点的坐标
+                dr, dc = shift
+                nr, nc = r + dr, c + dc
+                
+                # 1. 边界检查
+                if not (0 <= nr < GRID_H and 0 <= nc < GRID_W):
+                    # 即使出界也算是安全问题，但通常寻路不会允许走到边缘。
+                    # 如果出界，则视为不可行 (取决于你的地图边界处理逻辑)。
+                    return False 
+                
+                # 2. 地图内容检查
+                # 假设你的 A* 寻路是基于 Small Agent 自身的 local_map，这里使用传入的地图。
+                if world_map[nr, nc] in (OBSTACLE, DANGER):
+                    return False  # 发现危险区或障碍物，不安全
+            
+            return True # 3x3 区域完全安全
 
         def astar_multi(start_rc, waypoints_rc):
             """
@@ -194,9 +227,9 @@ class AgentBase:
                     nr, nc = cr + dr, cc + dc
                     if not (0 <= nr < GRID_H and 0 <= nc < GRID_W):
                         continue
+                    # if not _is_safe_area(nr, nc, self.local_map):
                     if self.local_map[nr, nc] in (OBSTACLE, DANGER):
                         continue
-
                     base_cost = 1
                     # base_cost = cell_traversal_cost(nr, nc)
                     step_cost = math.hypot(dr, dc) * base_cost
@@ -287,7 +320,7 @@ class AgentBase:
         # ------------------------------
         # 无路径：无需移动
         # ------------------------------
-        if (not self.has_goal) or self.planned_path is None or len(self.planned_path) == 0:
+        if self.hold_state or (not self.has_goal) or self.planned_path is None or len(self.planned_path) == 0:
             return
 
 
@@ -317,6 +350,7 @@ class AgentBase:
         # if self.energy <= 0:
             # self.energy = 0
             # return
+        self.hist.append(self.pos)
         self.energy_cost += self.energy_cost_rate * math.hypot(new_x - x, new_y - y)
 
         # ------------------------------
@@ -456,6 +490,10 @@ class LargeAgent(AgentBase):
         self.assignments = None
         self.region = None
 
+        # === 救援相关属性 ===
+        self.death_queue = []
+        self.rescue_target = None
+
     def integrate_map_patch(self, patch):
         """将收到的patch应用到自己的known_map"""
         for (i,j,val) in patch:
@@ -474,35 +512,137 @@ class LargeAgent(AgentBase):
                         self.known_map[i,j] = val
                     elif cur == UNKNOWN:
                         self.known_map[i,j] = val
+        self.fuse_own_sensing()
         self.local_map = self.known_map.copy()
 
     def fuse_own_sensing(self):
         """将自己感知到的地图写入 known_map"""
         inds = np.where(self.local_map != UNKNOWN)
         for i,j in zip(inds[0].tolist(), inds[1].tolist()):
+            if self.known_map[i,j] == DANGER:
+                continue
             self.known_map[i,j] = self.local_map[i,j]
 
-    def reason_and_assign(self, agents, now_time):
-        if now_time - self.last_reason_time < BRAIN_REASON_INTERVAL:
+    def update_strategy(self, world, my_children):
+        """
+        每帧调用一次。根据优先级决定当前的导航目标。
+        优先级 1: 救援模式 (处理 death_queue -> 前往事故点 -> 扫描 & 增援)
+        优先级 2: 跟随模式 (计算子节点重心 -> 跟随)
+        """
+        if not self.alive:
             return
-        self.last_reason_time = now_time
-        # fuse own sensing
-        self.fuse_own_sensing()
-        # assign frontiers
-        assigns = self.multi_behavior.decide(self, agents)
-        return assigns
 
-    def inspect_death_spots(self, env):
-        pass
+        # --- 阶段 1: 救援任务判定 ---
+        
+        # 1.1 如果闲置且队列有死亡事件，提取任务
+        if self.rescue_target is None and self.death_queue:
+            event = self.death_queue.pop(0)
+            self.rescue_target = event['loc']
+            print(f"[{self.id}] ⚠️ 收到求救信号，中断当前任务，前往: {self.rescue_target}")
+            # 立即清空旧路径，确立救援优先级
+            self.planned_path = []
+            self.has_goal = False
 
-    def brain_reason_and_assign(self, agents, now_time):
-        # brain node: global planning
-        if now_time - self.brain_reason_time < BRAIN_REASON_INTERVAL:
-            return
-        self.brain_reason_time = now_time
-        self.fuse_own_sensing()
-        assigns = self.brain_planner.decide(self, agents)
-        return assigns
+        # 1.2 如果处于救援模式 (有 rescue_target)
+        if self.rescue_target:
+            for child in my_children:
+                child.hold_state = True
+                child.clear_seq()
+            dist = math.hypot(self.pos[0] - self.rescue_target[0], self.pos[1] - self.rescue_target[1])
+            arrival_threshold = self.sensor_range * 0.3
+
+            if dist < arrival_threshold:
+                # A. 到达现场 -> 执行救援动作
+                print(f"[{self.id}] ✅ 到达事故现场。扫描危险区并呼叫增援。")
+                self.recognize_danger_area(world)
+                
+                # 调用世界的增援接口
+                if hasattr(world, 'spawn_reinforcement_agent'):
+                    world.spawn_reinforcement_agent(self.id)
+                sons = [a for a in world.agents if a.id == self.id]
+                assigns = self.generate_and_dispatch_tasks(
+                    child_agents=sons,
+                    comm=None,
+                    region_mask=self.region,
+                    frontier_cells=None,
+                    num_points=30,
+                    min_dist=4.0,
+                    now_time=None
+                )
+                for son in sons:
+                    seq_new = assigns.get(son.id, [])
+                    son.task_seq = seq_new[:]
+                    son.has_goal = len(seq_new) > 0
+                    son.local_map = self.known_map.copy()
+                    if len(son.task_seq)>0:
+                        son.plan_path_sequence()
+                # B. 救援完成 -> 清除目标
+                self.rescue_target = None
+                self.has_goal = False
+                
+                # C. 立即进入阶段 2 (本帧不发呆，马上转为跟随模式)
+                pass 
+            else:
+                # D. 未到达 -> 规划/执行前往救援点的路径
+                # 如果当前没有路径，或者路径终点不是救援点，重新规划
+                needs_replan = False
+                if not self.has_goal or self.goal is None:
+                    needs_replan = True
+                # elif math.hypot(self.goal[0]-self.rescue_target[0], self.goal[1]-self.rescue_target[1]) > 1.0:
+                #     needs_replan = True
+                
+                if needs_replan:
+                    success = self.navigate_to_point(self.rescue_target, world)
+                    if not success:
+                        print(f"[{self.id}] ❌ 救援路径不可达，跳过此任务。")
+                        self.rescue_target = None # 放弃，防止卡死
+                        self.has_goal = False
+                
+                # 如果正在救援，直接返回，不再执行下面的跟随逻辑
+                return 
+
+        # --- 阶段 2: 日常跟随模式 (Centroid Following) ---
+        # 只有在 rescue_target 为 None 时才会执行到这里        
+        if my_children:
+            for child in my_children:
+                child.hold_state = False
+            # 计算重心
+            xs = [c.pos[0] for c in my_children]
+            ys = [c.pos[1] for c in my_children]
+            centroid = (sum(xs) / len(xs), sum(ys) / len(ys))
+            
+            # 规划去重心
+            # 注意：为了避免每一帧都疯狂重规划导致抖动/性能下降，可以加一个距离阈值
+            # 只有当当前目标距离新重心太远，或者当前没有目标时才重规划
+            should_update_centroid = False
+            if not self.has_goal:
+                should_update_centroid = True
+            else:
+                # 如果当前目标和现在的重心偏差超过 30 像素，则更新
+                curr_goal_dist = math.hypot(self.goal[0] - centroid[0], self.goal[1] - centroid[1])
+                if curr_goal_dist > 30.0:
+                    should_update_centroid = True
+            
+            if should_update_centroid:
+                self.navigate_to_point(centroid, world)
+        else:
+            # 没有子节点？原地待命或者随机漫步
+            pass
+
+    def recognize_danger_area(self, world):
+        """到达现场后，将传感器范围内的真实 DANGER 区域同步到 known_map"""
+        cx, cy = int(self.pos[0]), int(self.pos[1])
+        r = 150
+        min_i = max(0, (cx - r)//GRID_CELL)
+        max_i = min(GRID_W-1, (cx + r)//GRID_CELL)
+        min_j = max(0, (cy - r)//GRID_CELL)
+        max_j = min(GRID_H-1, (cy + r)//GRID_CELL)
+        for i in range(min_i, max_i+1):
+            for j in range(min_j, max_j+1):
+                gx, gy = pos_of_cell(i, j)
+                if math.hypot(gx - cx, gy - cy) <= r:
+                    val = world.ground_grid[j, i]
+                    self.known_map[j, i] = val
 
     def sample_candidate_points(self, region_mask, frontier_cells=None, num_points=20, min_dist=5.0):
         """
@@ -771,58 +911,67 @@ class LargeAgent(AgentBase):
 
         return assignments
 
-    def navigate_to_children_centroid(self, child_agents, env):
-        """
-        导航到所有 child 的几何中心（centroid），如果中心不可行则自动寻找最近安全点。
-        最终调用 A* 并让机器人执行路径。
-        """
-        if not child_agents:
-            return None
+    def navigate_to_point(self, target_pos, world):
+            """
+            导航到任意坐标 target_pos。
+            如果直接不可达（在墙里），会尝试寻找附近的最近安全点。
+            返回: Boolean (是否成功生成路径)
+            """
+            # 1. 检查目标点安全性，若不安全寻找替代点
+            target_pos = self._ensure_safe_target(target_pos, world)
+            if target_pos is None:
+                return False
 
-        # ----------------------------
-        # 1. 计算几何中心 (centroid)
-        # ----------------------------
-        xs = [c.pos[0] for c in child_agents]
-        ys = [c.pos[1] for c in child_agents]
-        cx = sum(xs) / len(xs)
-        cy = sum(ys) / len(ys)
-        centroid = (cx, cy)
-
-        # ----------------------------
-        # 2. 如果中心可行则使用中心，否则 BFS 向外找最近安全点
-        # ----------------------------
-        target = self._find_safe_target(centroid, env)
-        if target is None:
-            print("[WARN] No safe target found near centroid")
-            return None
-
-        # ----------------------------
-        # 3. A* 寻路
-        # ----------------------------
-        path = self._astar_path(self.pos, target, env)
-        if not path:
-            print("[WARN] A* failed to find path to centroid-safe point")
-            return None
-
-        # ----------------------------
-        # 4. 设置路径，让机器人移动
-        # ----------------------------
-        self.planned_path = path
-        self.goal = target
-        self.has_goal = True
-        return path
-
-
+            # 2. A* 寻路
+            path = self._astar_path(self.pos, target_pos, world)
+            if path and len(path) > 0:
+                self.planned_path = path
+                self.goal = target_pos
+                self.has_goal = True
+                return True
+            return False
     # ---------------------------------------------------------
     # 工具函数：检查点是否安全
     # ---------------------------------------------------------
+    def _ensure_safe_target(self, pos, world):
+            """如果 pos 在障碍物/已知危险中，BFS 搜索最近的可行点"""
+            cx, cy = cell_of_pos(pos)
+            if self._is_safe_cell(world, cx, cy):
+                return pos
+            
+            # BFS 搜索最近安全格子
+            # 注意：这里使用 visited_grid 或 known_map，LargeAgent 应该基于自己的认知避障？
+            # 通常为了防止Large送死，这里可以用 world.ground_grid 或者 world.visited_grid (上帝视角辅助)
+            # 或者严格点，用 self.known_map
+            
+            start_node = (cx, cy)
+            q = deque([start_node])
+            visited = {start_node}
+            
+            # 限制搜索范围防止卡死
+            max_steps = 200 
+            steps = 0
+
+            while q and steps < max_steps:
+                curr_x, curr_y = q.popleft()
+                steps += 1
+
+                if self._is_safe_cell(world, curr_x, curr_y):
+                    return pos_of_cell(curr_x, curr_y)
+
+                for dx, dy in [(0,1), (0,-1), (1,0), (-1,0)]:
+                    nx, ny = curr_x + dx, curr_y + dy
+                    if (nx, ny) not in visited and 0 <= nx < GRID_W and 0 <= ny < GRID_H:
+                        visited.add((nx, ny))
+                        q.append((nx, ny))
+            return None
+
+
     def _is_safe_cell(self, world, cx, cy):
         if cx < 0 or cx >= GRID_W or cy < 0 or cy >= GRID_H:
             return False
         val = world.visited_grid[cy, cx]
-        return val != OBSTACLE and val != DANGER
-
-
+        return val ==FREE
     # ---------------------------------------------------------
     # 工具函数：寻找最近安全点（BFS）
     # ---------------------------------------------------------
@@ -847,8 +996,6 @@ class LargeAgent(AgentBase):
                 q.append((x + dx, y + dy))
 
         return None
-
-
     # 工具函数：A* 寻路
     def _astar_path(self, start_pos, goal_pos, world):
         sx, sy = cell_of_pos((start_pos[0], start_pos[1]))
@@ -893,8 +1040,6 @@ class LargeAgent(AgentBase):
                     came[(nx, ny)] = (x, y)
 
         return None
-
-
     def draw_self(self, screen):
         if self.is_brain:
             color = (220, 100, 40)
@@ -965,6 +1110,7 @@ class BrainAgent(LargeAgent):
 
                 # 3.2 统计 UNKNOWN 数量
                 unknown_count = np.sum(block == UNKNOWN)
+                danger_count = np.sum(block == DANGER)
                 if unknown_count < unknown_thresh:
                     continue  # 未知太少不值得探索
 
@@ -980,7 +1126,7 @@ class BrainAgent(LargeAgent):
                 min_dist = min(dists) if dists else 9999
 
                 # 3.5 评分：未知越多越高，距离越小越高
-                score = unknown_count/ (min_dist**0.7 + 1e-6)
+                score = (unknown_count- danger_count**1.23)/ (min_dist**0.7 + 1e-6)
 
                 # 3.6 mask
                 mask = np.zeros((H, W), dtype=bool)

@@ -26,6 +26,7 @@ SENSOR_LARGE = 30
 AGENT_MAX_SPEED = 60.0  # pixels per second
 LARGE_AGENT_MAX_SPEED = 20.0  # pixels per second
 BRAIN_REASON_INTERVAL = 5.0  # seconds
+FAST_REASON_INTERVAL = 2.5
 
 AGENT_COMM_RANGE = 100
 COMM_PACKET_LOSS = 0.05  # 报文丢失概率
@@ -33,7 +34,7 @@ COMM_DELAY = 0.0  # 可模拟延迟（秒）
 
 DANGER_ZONE_RADIUS = 22
 
-SEED = 110716
+SEED = 233174
 
 # Occupancy codes for maps:
 # -1 unknown, 0 free, 1 obstacle, 2 danger, 3 victim

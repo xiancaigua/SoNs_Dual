@@ -166,6 +166,7 @@ def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=
         agent_info = {
             "id": agent.id,
             "alive": agent.alive,
+            "energycost":agent.energy_cost,
             "final_position": [int(a) for a in agent.pos],
             "trajectory_length": len(agent.hist),
             "hist_traj": [[int(a) for a in pos] for pos in agent.hist],
@@ -180,6 +181,7 @@ def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=
         large_agent_info = {
             "id": large_agent.id,
             "alive": large_agent.alive,
+            "energycost":large_agent.energy_cost,
             "final_position": [int(a) for a in large_agent.pos],
             "trajectory_length": len(large_agent.hist),
             "hist_traj": [[int(a) for a in pos] for pos in large_agent.hist],
@@ -218,3 +220,30 @@ def print_simulation_summary(world, sim_time, simulation_result):
     for la in world.large_agents:
         print(f"LargeAgent {la.id} alive={la.alive} known_cells={np.sum(la.known_map != UNKNOWN)}")
 
+def get_map_files(directory_path="map"):
+    """
+    打开指定的文件夹，获取其中所有文件的文件名和完整路径。
+    
+    参数:
+        directory_path (str): 地图文件夹的相对路径，默认为 'map'。
+        
+    返回:
+        list: 包含 (文件名, 完整路径) 元组的列表。
+    """
+    map_data = []
+    
+    # 检查目录是否存在
+    if not os.path.isdir(directory_path):
+        print(f"❌ 错误: 目录 '{directory_path}' 不存在。")
+        return map_data
+
+    # 遍历目录下的所有文件和文件夹
+    for filename in os.listdir(directory_path):
+        # 构造文件的完整路径
+        full_path = os.path.join(directory_path, filename)
+        
+        # 检查是否是文件 (排除子文件夹)
+        if os.path.isfile(full_path):
+            map_data.append((filename, full_path))
+            
+    return map_data

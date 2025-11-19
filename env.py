@@ -2,7 +2,7 @@ import heapq
 import pygame
 import random
 import math
-import copy
+import pickle
 import numpy as np
 
 from parameters import *
@@ -76,6 +76,7 @@ class World:
         self.width = WORLD_W
         self.height = WORLD_H
         self.time = 0.0
+        self.spawn_times = NUM_AGENTS
         
         self.obstacles = []
         self.danger_zones = []
@@ -174,7 +175,6 @@ class World:
                 for i in range(gx, gx + grid_w):
                     self.ground_grid[j, i] = DANGER
 
-
     def spawn_agents(self,num=NUM_LARGE):
         """在 base 点生成所有大机器人"""
         init_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)
@@ -220,7 +220,7 @@ class World:
             sa.local_map = init_map.copy()
         self.brain.local_map = init_map.copy()
         self.brain.known_map = init_map.copy()
-
+        self.spawn_times += num
 
     def find_agent_by_id(self, id_):
         if id_ is None:
@@ -231,10 +231,38 @@ class World:
                 return a
         return None
 
+    def spawn_reinforcement_agent(self, parent_large_id):
+            """
+            向基地求援：生成一个新的 Small Agent
+            初始位置在基地 (spawn_center)，目标设为跟随父节点
+            """
+            # 找到父节点对象
+            parent_agent = self.find_agent_by_id(parent_large_id)
+            
+            if not parent_agent:
+                return
 
-    def spawn_reinforcement_agent(self):
-        # TODO
-        pass
+            # 生成新的 ID (这里简单处理，实际应用可能需要更好的 ID 管理)
+            new_id = 1000 + len(self.agents) + len(self.wasted_agents)
+            bx, by = self.spawn_center
+            
+            new_sa = AgentBase(
+                id=new_id,
+                x=bx, y=by,
+                is_large=False
+            )
+            new_sa.father_id = parent_large_id
+            
+            # 继承当前的已知地图
+            new_sa.local_map = self.known_grid.copy()
+            
+            new_sa.task_seq = [parent_agent.pos] # 初始目标指向父亲
+            
+            # 注册关系
+            parent_agent.son_ids.append(new_id)
+            self.agents.append(new_sa)
+            
+            print(f"[Reinforcement] New Agent {new_id} dispatched for Large {parent_large_id}")
 
     def place_victim(self):
         """生成距离大脑节点最远且A*可达的victim"""
@@ -269,28 +297,66 @@ class World:
         self.victim = Victim(best_point[0], best_point[1])
         return self.victim
 
-    def astar(self, grid, start, goal):
-        """基于栅格地图的A*"""
-        w, h = grid.shape[1], grid.shape[0]
-        open_set = [(0, start)]
-        came_from = {}
-        gscore = {start: 0}
-        fscore = {start: abs(start[0] - goal[0]) + abs(start[1] - goal[1])}
+    def check_and_handle_deaths(self):
+            """
+            处理所有机器人的死亡判定逻辑
+            Small: 自身+上下左右5点判定 -> 死亡 -> 上报 Large
+            Large: 自身中心判定 -> 死亡
+            """
+            
+            # 1. 检测 Small Agents (5点判定)
+            # 偏移量：中心，上，下，左，右 (单位：像素，假设1个像素或者微小偏移)
+            # 注意：如果坐标是连续的，这里的 offset 可以是 1 或 2 像素
+            offsets = [(0,0)]
+            # offsets = [(0,0), (0, 1), (0, -1), (1, 0), (-1, 0)]
+            for sa in self.agents:
+                if not sa.alive: continue
+                sa_cell_pos = cell_of_pos(sa.pos)
+                
+                hit_danger = False
+                fatal_pos = None
+                
+                for dx, dy in offsets:
+                    check_x = sa_cell_pos[0] + dx
+                    check_y = sa_cell_pos[1] + dy
+                    if 0<=check_x<GRID_W and 0<=check_y<GRID_H:
+                        if self.ground_grid[check_y,check_x] == DANGER:
+                            hit_danger = True
+                            fatal_pos = (check_x, check_y)
+                            break
+                
+                if hit_danger:
+                    sa.alive = False
+                    print(f"!! Agent {sa.id} DIED at {fatal_pos}. Reporting to Father {sa.father_id}.")
+                    
+                    # 查找父节点并上报
+                    father = next((la for la in self.large_agents if la.id == sa.father_id), None)
+                    if father and father.alive:
+                        # 父节点记录：(死亡子节点ID, 子节点生前最后一个安全位置)
+                        # 假设 sa.last_safe_pos 在每次 move 前更新
+                        safe_pos = sa.hist[-2] 
+                        father.death_queue.append({
+                            'child_id': sa.id,
+                            'loc': safe_pos # 这个pos是世界坐标
+                        })
+                        # 标记致死的危险区域点到父节点地图 (可选)
+                        cx, cy = fatal_pos
+                        if 0 <= cx < GRID_W and 0 <= cy < GRID_H:
+                            father.local_map[cy, cx] = DANGER
+                            father.known_map[cy, cx] = DANGER
+                            
+                            self.visited_grid[cy, cx] = DANGER
+                            self.known_grid[cy, cx] = DANGER
+                            self.brain.known_map[cy, cx] = DANGER
 
-        while open_set:
-            _, current = heapq.heappop(open_set)
-            if current == goal:
-                return True  # 存在路径即可
-            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
-                nx, ny = current[0] + dx, current[1] + dy
-                if 0 <= nx < w and 0 <= ny < h and grid[ny][nx] == FREE:
-                    ng = gscore[current] + 1
-                    if (nx, ny) not in gscore or ng < gscore[(nx, ny)]:
-                        came_from[(nx, ny)] = current
-                        gscore[(nx, ny)] = ng
-                        fscore[(nx, ny)] = ng + abs(nx - goal[0]) + abs(ny - goal[1])
-                        heapq.heappush(open_set, (fscore[(nx, ny)], (nx, ny)))
-        return None
+        # 2. 检测 Large Agents (仅中心判定)
+            for la in self.large_agents:
+                if not la.alive: continue
+                la_cell_pos = cell_of_pos(la.pos)
+                if 0<=la_cell_pos[0]<GRID_W and 0<=la_cell_pos[1]<GRID_H:
+                    if self.ground_grid[la_cell_pos[1], la_cell_pos[0]] == DANGER:
+                        la.alive = False
+                        print(f"!!!! Large Agent {la.id} DIED in Danger Zone !!!!")
 
     def update(self, dt, comms: Communication, now_time):
         """主仿真循环，每一帧调用一次"""
@@ -322,7 +388,7 @@ class World:
         for a in self.agents:
             if a.alive:
                 self.large_agents[a.father_id].known_map = np.maximum(self.large_agents[a.father_id].known_map, a.local_map)
-                self.known_grid = np.maximum(self.known_grid, a.local_map)
+                self.known_grid = np.maximum(self.known_grid, self.large_agents[a.father_id].known_map)
         self.brain.known_map = self.known_grid
 
             # 3. 全局规划（只有 brain 执行）
@@ -358,11 +424,17 @@ class World:
                     seq = assigns.get(son.id, [])
                     son.task_seq = seq[:]
                     son.has_goal = len(seq) > 0
-                    if son.has_goal:
-                        son.plan_path_sequence(self, comms, now_time)
+                    if son.task_seq:
+                        son.plan_path_sequence()
 
             # 更新时间戳
             self.brain.last_reason_time = now_time
+
+        for la in self.large_agents:
+            if la.alive:
+                sons_list = [a for a in self.agents if a.father_id == la .id]
+                la.update_strategy(self,sons_list)
+
 
         # 5. 所有 agent 执行 step_motion（跟踪各自的 planned_path）
         for a in self.agents + self.large_agents:
@@ -370,28 +442,99 @@ class World:
                 a.step_motion()
                 # if not a.is_large
                 self.mark_visited(a.pos[0], a.pos[1],a.is_large)
+       
+        self.check_and_handle_deaths()
         
-        for la in self.large_agents:
-            if la.alive:
-                sons_list = [a for a in self.agents if a.father_id == la .id]
-                la.navigate_to_children_centroid(sons_list,self)
+        # 6.1. 预处理 Large Agents (确定存活/死亡状态)
+        # 识别已死亡的 Large Agent ID 集合
+        dead_large_ids = {la.id for la in self.large_agents if not la.alive}
+        
+        # 建立存活 Large Agent 的 ID-对象 映射，方便查找最近的父节点
+        alive_large_map = {la.id: la for la in self.large_agents if la.alive} 
+        
+        # 更新 self.wasted_large_agents 和 self.large_agents 列表
+        self.wasted_large_agents.extend([la for la in self.large_agents if not la.alive])
+        self.large_agents = list(alive_large_map.values())
 
-        # 6. 处理死亡 robots（掉入危险区 / 能量耗尽）
+
+        # 6.2. 处理 Small Agents (存亡判断与父节点重分配)
         alive_agents = []
         for a in self.agents:
             if not a.alive:
+                # 机器人已死亡，移至浪费列表
                 self.wasted_agents.append(a)
             else:
+                # 机器人存活，检查其父节点状态
+                parent_id = a.father_id
+                
+                # 如果当前父节点 ID 存在于已死亡的 Large Agent ID 集合中
+                if parent_id in dead_large_ids:
+                    
+                    if alive_large_map:
+                        # **核心逻辑：找到最近的存活 Large Agent 作为新父节点**
+                        
+                        # 使用 distance() 函数计算与所有存活 Large Agent 的距离，并找到最近的一个
+                        nearest_la = min(
+                            alive_large_map.values(), 
+                            key=lambda la: distance(a.pos, la.pos)
+                        )
+                        
+                        # 重新分配父节点 ID
+                        # (在实际系统中，你可能还需要更新老父节点的 son_ids 列表，但这需要更复杂的逻辑)
+                        a.father_id = nearest_la.id
+                        # print(f"Agent {a.id} 的父节点 {parent_id} 死亡，重新分配给 {nearest_la.id}") 
+
+                    else:
+                        # 没有存活的 Large Agent 了
+                        a.father_id = None
+                        break
+                        # print(f"Agent {a.id} 失去父节点且没有可用的新父节点。")
+                
                 alive_agents.append(a)
+                
         self.agents = alive_agents
 
-        alive_large = []
+        # 1. 创建当前所有存活 Small Agent 的 ID 集合，用于快速查找
+        alive_small_agent_ids = {a.id for a in self.agents}
+
+        # 2. 遍历所有存活 Large Agent，清理其子节点列表
         for la in self.large_agents:
             if not la.alive:
-                self.wasted_large_agents.append(la)
-            else:
-                alive_large.append(la)
-        self.large_agents = alive_large
+                continue
+            initial_count = len(la.son_ids)
+            
+            # 过滤 la.son_ids，只保留 ID 仍在 alive_small_agent_ids 集合中的子节点
+            new_son_ids = [
+                child_id for child_id in la.son_ids 
+                if child_id in alive_small_agent_ids
+            ]
+            
+            # 如果列表发生了变化，则更新
+            if len(new_son_ids) != initial_count:
+                la.son_ids = new_son_ids
+
+    def astar(self, grid, start, goal):
+        """基于栅格地图的A*"""
+        w, h = grid.shape[1], grid.shape[0]
+        open_set = [(0, start)]
+        came_from = {}
+        gscore = {start: 0}
+        fscore = {start: abs(start[0] - goal[0]) + abs(start[1] - goal[1])}
+
+        while open_set:
+            _, current = heapq.heappop(open_set)
+            if current == goal:
+                return True  # 存在路径即可
+            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nx, ny = current[0] + dx, current[1] + dy
+                if 0 <= nx < w and 0 <= ny < h and grid[ny][nx] == FREE:
+                    ng = gscore[current] + 1
+                    if (nx, ny) not in gscore or ng < gscore[(nx, ny)]:
+                        came_from[(nx, ny)] = current
+                        gscore[(nx, ny)] = ng
+                        fscore[(nx, ny)] = ng + abs(nx - goal[0]) + abs(ny - goal[1])
+                        heapq.heappush(open_set, (fscore[(nx, ny)], (nx, ny)))
+        return None
 
     def coverage_percentage(self):
         total = GRID_W * GRID_H
@@ -411,7 +554,8 @@ class World:
                 self.visited_grid[cy, cx] != OBSTACLE and self.visited_grid[cy, cx] != DANGER:
                 self.visited_grid[cy, cx] = FREE
         else:
-            dirs = [(0,0), (1,0), (-1,0), (0,1), (0,-1)]
+            dirs = [(0,0)]
+            # dirs = [(0,0), (1,0), (-1,0), (0,1), (0,-1)]
             for dx, dy in dirs:
                 nx, ny = cx + dx, cy + dy
                 if 0 <= nx < GRID_W and 0 <= ny < GRID_H and \
@@ -930,3 +1074,62 @@ class World:
                     print("------------------------------------------------------")
                 else:
                     print(f"[DEBUG] Child {sid} merged into Father {la.id} SUCCESSFULLY.")
+
+
+    def save_state(self, filename="world_state.pkl"):
+        """
+        使用 pickle 将当前 World 实例的状态保存到文件。
+        
+        参数:
+            filename (str): 保存的文件名 (例如: 'my_world_seed_123.pkl')
+        """
+        # 1. 创建一个只包含必要状态数据的字典
+        # 排除掉可能不需要保存或不兼容 pickle 的部分，通常是临时的计算结果。
+        # 注意: 这里的 self.agents, self.large_agents, self.brain 等都将被保存，
+        # 它们内部的状态也会递归保存。
+        state_to_save = self.__dict__
+        
+        try:
+            with open(filename, 'wb') as f:
+                pickle.dump(state_to_save, f)
+            print(f"✅ 世界状态成功保存到: {filename}")
+        except Exception as e:
+            print(f"❌ 世界状态保存失败: {e}")
+
+    @classmethod
+    def load_state(cls, filename="world_state.pkl"):
+        """
+        使用 pickle 从文件加载 World 实例的状态。
+        注意: 这是一个类方法 (classmethod)，它返回一个新的 World 实例。
+        
+        参数:
+            filename (str): 加载的文件名
+            
+        返回:
+            World: 加载成功的 World 实例，或 None (加载失败)
+        """
+        if not os.path.exists(filename):
+            print(f"❌ 错误: 文件 {filename} 不存在。")
+            return None
+            
+        try:
+            with open(filename, 'rb') as f:
+                # 1. 加载保存的状态字典
+                state = pickle.load(f)
+            
+            # 2. 创建一个新的 World 实例（不需要运行 __init__）
+            # 我们通过 __new__ 跳过 __init__，因为它会重新生成环境
+            new_world = cls.__new__(cls)
+            
+            # 3. 将加载的状态字典赋值给新实例的 __dict__
+            new_world.__dict__.update(state)
+            
+            print(f"✅ 世界状态成功从 {filename} 载入。")
+            return new_world
+            
+        except Exception as e:
+            print(f"❌ 世界状态载入失败: {e}")
+            # 打印堆栈信息帮助调试，特别是遇到 UnpicklingError 时
+            import traceback
+            traceback.print_exc() 
+            return None
