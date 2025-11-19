@@ -493,7 +493,7 @@ class World:
                 alive_agents.append(a)
                 
         self.agents = alive_agents
-
+        print(len(self.wasted_agents))
         # 1. 创建当前所有存活 Small Agent 的 ID 集合，用于快速查找
         alive_small_agent_ids = {a.id for a in self.agents}
 

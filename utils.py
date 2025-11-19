@@ -150,6 +150,8 @@ def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=
             "alive_large_agents": alive_large,
             "total_large_agents": NUM_LARGE,
             "map_id": map_id,
+            "spawn_times":world.spawn_times,
+            "dead_agents":(len(world.wasted_agents) + 100*len(world.wasted_large_agents)),
             "coverage_percentage": world.coverage_percentage(),
             "victim_rescued": world.victim.rescued,
             "obstacles_count": len(world.obstacles),
