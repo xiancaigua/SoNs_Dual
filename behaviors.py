@@ -153,7 +153,7 @@ class PathPlanningBehavior(Behavior):
     # ======================================================
     # 主行为决策逻辑
     # ======================================================
-    def decide(self, agent, sense_data, dt):
+    def decide(self, agent):
         now = getattr(agent, "sim_time", 0.0)
         grid = agent.local_map
 
@@ -305,95 +305,6 @@ class easyFrontierAssignmentBehavior(Multi_Behavior):
 
         return assignments  # {agent_id: (x, y)}
 
-# class NeuralFrontierAssignmentBehavior(Multi_Behavior):
-#     # TODO 此类方法暂时废弃
-#     """
-#     使用训练好的 SlowModel（Diffusion Transformer）进行神经前沿预测与分配。
-#     逻辑：
-#     1. 将当前脑节点的 known_map 与各 agent 的全局状态编码为状态向量；
-#     2. 调用 SlowModel.sample(state_vec) 生成一组子目标序列；
-#     3. 选择前若干子目标作为“前沿点”；
-#     4. 根据距离或策略为每个小节点分配目标。
-#     """
-
-#     def __init__(self, model_path="models/slow_model.pth", device="cpu", n_subgoals=5):
-#         super().__init__()
-#         self.device = device
-#         self.model = SlowModel().to(device)
-#         self.model.load_state_dict(torch.load(model_path, map_location=device))
-#         self.model.eval()
-#         self.n_subgoals = n_subgoals
-#         self.last_assignment = {}
-
-#     # -------------------------------
-#     # 状态编码函数
-#     # -------------------------------
-#     def encode_global_state(self, brain_agent, agents):
-#         """
-#         将当前全局状态编码为一个 state vector，输入给 SlowModel。
-#         示例特征（可按需扩展）：
-#         - 探索率（覆盖百分比）
-#         - 活跃节点数
-#         - 大脑节点位置
-#         - victim 是否被救
-#         """
-#         explored = np.sum(brain_agent.known_map != -1)
-#         total = brain_agent.known_map.size
-#         coverage = explored / total
-
-#         n_alive = sum([a.alive for a in agents])
-#         brain_pos = np.array(brain_agent.pos, dtype=np.float32) / np.array([WORLD_W, WORLD_H])
-#         victim_status = 1.0 if hasattr(brain_agent, "victim_found") and brain_agent.victim_found else 0.0
-
-#         # 形成固定长度状态向量（可以根据模型训练时的定义调整）
-#         state_vec = np.array([
-#             coverage,
-#             n_alive / len(agents),
-#             brain_pos[0],
-#             brain_pos[1],
-#             victim_status,
-#             0.0  # 占位符，可用于平均连接强度等
-#         ], dtype=np.float32)
-#         return state_vec
-
-#     # -------------------------------
-#     # 主决策函数
-#     # -------------------------------
-#     def decide(self, brain_agent, agents):
-#         """
-#         利用神经网络生成前沿目标并分配。
-#         """
-#         # === Step 1: 状态编码 ===
-#         state_vec = self.encode_global_state(brain_agent, agents)
-
-#         # === Step 2: 生成子目标序列 ===
-#         with torch.no_grad():
-#             input_tensor = torch.tensor(state_vec, dtype=torch.float32, device=self.device).unsqueeze(0)
-#             subgoals = self.model.sample(input_tensor, n_samples=1)  # np.ndarray [N, 2]
-#             if isinstance(subgoals, torch.Tensor):
-#                 subgoals = subgoals.cpu().numpy()
-#         subgoals = np.clip(subgoals, 0, 1)  # 归一化输出映射
-#         subgoals[:, 0] *= WORLD_W
-#         subgoals[:, 1] *= WORLD_H
-
-#         # === Step 3: 将子目标作为“前沿” ===
-#         frontiers = [tuple(map(float, g)) for g in subgoals[:self.n_subgoals]]
-
-#         # === Step 4: 分配到各 agent ===
-#         assignments = {}
-#         available = frontiers.copy()
-#         for a in agents:
-#             if not available:
-#                 assignments[a.id] = None
-#                 continue
-#             distances = [distance(a.pos, f) for f in available]
-#             target = available[int(np.argmin(distances))]
-#             assignments[a.id] = target
-#             available.remove(target)
-
-#         self.last_assignment = assignments
-#         return assignments
-
 class ERRTFrontierAssignmentBehavior(Multi_Behavior):
     """
     基于E-RRT思想的多目标前沿分配算法
@@ -538,14 +449,6 @@ class ERRTFrontierAssignmentBehavior(Multi_Behavior):
         
         # 2. 构建多目标成本矩阵
         cost_matrix = self.build_cost_matrix(agents, self.candidate_goals, global_map)
-        
-        # plt.imshow(global_map, cmap='viridis')
-        # x1s = [g[0]//10 for g in self.candidate_goals]
-        # y1s = [g[1]//10 for g in self.candidate_goals]
-        # x2s = [a.pos[0]//10 for a in agents]
-        # y2s = [a.pos[1]//10 for a in agents]
-        # plt.scatter(x1s, y1s, c='red', marker='x', label='Candidate Goals')
-        # plt.scatter(x2s, y2s, c='blue', marker='o', label='Agents')
 
         # 3. 使用优化算法进行分配
         try:

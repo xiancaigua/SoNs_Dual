@@ -43,7 +43,7 @@ class AgentBase:
         if behavior is not None:
             self.behavior = behavior
         else:
-            self.behavior = ReactiveBehavior() if not is_large else ExploreBehavior()
+            self.behavior = PathPlanningBehavior()
 
     # =====================================================
     # 感知函数：不再能直接探测到危险区
@@ -484,7 +484,7 @@ class LargeAgent(AgentBase):
         if multi_behavior is not None:
             self.multi_behavior = multi_behavior
         else:
-            self.multi_behavior = easyFrontierAssignmentBehavior()
+            self.multi_behavior = ERRTFrontierAssignmentBehavior()
         self.brain_planner = BrainGlobalPlanner()
 
         self.assignments = None
@@ -493,6 +493,11 @@ class LargeAgent(AgentBase):
         # === 救援相关属性 ===
         self.death_queue = []
         self.rescue_target = None
+
+    def large_reason(self, children):
+        if len(children) == 0:
+            return None
+        return self.multi_behavior.decide(self,children)
 
     def integrate_map_patch(self, patch):
         """将收到的patch应用到自己的known_map"""
@@ -1144,9 +1149,6 @@ class BrainAgent(LargeAgent):
         regions_sorted = sorted(regions, key=lambda x: -x["score"])
 
         return regions_sorted
-
-
-
 
     def assign_region_to_middle(self, middles, max_assign_per_middle=1):
         """

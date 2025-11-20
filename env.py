@@ -571,98 +571,119 @@ class World:
         # 信息整合机制：receiver.integrate_map_patch() 更新全局地图 集体形成共享认知
         # 自组织任务分配 执行 reason_and_assign() 并广播目标 忽视层级结构所有机器人都可以收到，大小结点之间无指挥关系
         self.time += dt
+        # 1. 更新所有机器人本地观测（small/middle/large 统一）
+        for a in self.agents + self.large_agents:
+            if a.alive:
+                a.update_local_map_from_sensing(self)
 
         victim_pos = self.victim.pos
         victim_cell = cell_of_pos(victim_pos)
         for la in self.large_agents:
             if la.known_map[victim_cell[1], victim_cell[0]] != UNKNOWN:
                 self.victim.rescued = True
-            
 
-        # 1) 检查哪些节点还活着，选举脑节点
+        # 检查哪些节点还活着
         dead_agents = [a for a in self.agents if not a.alive]
         self.wasted_agents.extend(dead_agents)
         self.agents = [a for a in self.agents if a.alive]
 
         dead_large = [la for la in self.large_agents if not la.alive and not la.is_brain]
         self.wasted_large_agents.extend(dead_large)
-        alive_large_agents = [la for la in self.large_agents if la.alive]
-        
-        if self.brain_id is None or not self.large_agents[self.brain_id].alive:
-            if alive_large_agents:
-                pass # 继续下面的选举流程
-            else:
-                self.large_agents = []
-                self.brain_id = None
-                return  # 没有活着的大节点，跳过本轮更新
-        else:
-            self.large_agents = alive_large_agents
-        if len(self.large_agents) == 0 or len(self.agents) == 0:
-            return  # 没有节点，跳过本轮更新
+        self.large_agents = [la for la in self.large_agents if la.alive]
 
-        # 2) 更新每个代理的感知信息 -> 更新 local_map
-        for a in self.agents + self.large_agents:
-            a.update_local_map_from_sensing(self)
-
-        # 3) periodic communications: small agents send map patches to large agents if within range
-        for a in self.agents + self.large_agents:
-            for la in self.large_agents:
-                if distance(a.pos, la.pos) <= AGENT_COMM_RANGE:
-                    a.send_map_patch(comms, [la], now_time)
-
-        # 4) deliver communications queued
-        # 多机器人系统之间的层级化的结构与信息互通
-        deliveries = comms.deliver(now_time)
-        for sender, receiver, msg in deliveries:
-            # msg dispatch
-            if msg.get('type') == 'map_patch':
-                # receiver should integrate patch
-                if isinstance(receiver, LargeAgent):
-                    receiver.integrate_map_patch(msg['patch'])
-
-        # 5) Large agents perform reasoning (System 2)
-        for la in self.large_agents:
-            if now_time - la.last_reason_time >= BRAIN_REASON_INTERVAL:
-                assigns = la.reason_and_assign([la], now_time)
-                la.last_reason_time = now_time
-                for aid, wp in assigns.items():
-                    agent = next((a for a in self.agents if a.id == aid), None)
-                    if agent is not None:
-                        agent.has_goal = True
-                        agent.goal = wp
-                    Largeagent = next((a for a in self.large_agents if a.id == aid), None)
-                    if Largeagent is not None:
-                        Largeagent.has_goal = True
-                        Largeagent.goal = wp
-                break
-
-        # 4) Agents decide & move
+        # 通常 brain / large 需要得到全局一致地图
         for a in self.agents:
-            sense = a.sense(self)
-            desired_vx, desired_vy = a.behavior.decide(a, sense, dt)
-            # 限制速度范围
-            speed = math.hypot(desired_vx, desired_vy)
-            if speed > AGENT_MAX_SPEED:
-                scale = AGENT_MAX_SPEED / (speed + 1e-9)
-                desired_vx *= scale
-                desired_vy *= scale
-            a.step_motion(desired_vx, desired_vy, dt, self)
+            if a.alive:
+                self.large_agents[a.father_id].known_map = np.maximum(self.large_agents[a.father_id].known_map, a.local_map)
+                self.known_grid = np.maximum(self.known_grid, self.large_agents[a.father_id].known_map)
+        self.brain.known_map = self.known_grid
 
-            # 更新已访问的网格单元
-            ci, cj = cell_of_pos(a.pos)
         for la in self.large_agents:
-            sense = la.sense(self)
-            desired_vx, desired_vy = la.behavior.decide(la, sense, dt)
-            # 限制速度范围
-            speed = math.hypot(desired_vx, desired_vy)
-            if speed > AGENT_MAX_SPEED:
-                scale = AGENT_MAX_SPEED / (speed + 1e-9)
-                desired_vx *= scale
-                desired_vy *= scale
-            la.step_motion(desired_vx, desired_vy, dt, self)
+            if not la.alive:
+                continue
+            if self.time - la.last_reason_time > BRAIN_REASON_INTERVAL:
+                sons_list = [a for a in self.agents if a.father_id == la .id]
+                assignments = la.large_reason(sons_list)
+                for id, target in assignments.item():
+                    
 
-            # 更新已访问的网格单元
-            ci, cj = cell_of_pos(la.pos)
+        # 5. 所有 agent 执行 step_motion（跟踪各自的 planned_path）
+        for a in self.agents + self.large_agents:
+            if a.alive:
+                a.step_motion()
+                # if not a.is_large
+                self.mark_visited(a.pos[0], a.pos[1],a.is_large)
+       
+        self.check_and_handle_deaths()
+        
+        # 6.1. 预处理 Large Agents (确定存活/死亡状态)
+        # 识别已死亡的 Large Agent ID 集合
+        dead_large_ids = {la.id for la in self.large_agents if not la.alive}
+        
+        # 建立存活 Large Agent 的 ID-对象 映射，方便查找最近的父节点
+        alive_large_map = {la.id: la for la in self.large_agents if la.alive} 
+        
+        # 更新 self.wasted_large_agents 和 self.large_agents 列表
+        self.wasted_large_agents.extend([la for la in self.large_agents if not la.alive])
+        self.large_agents = list(alive_large_map.values())
+
+
+        # 6.2. 处理 Small Agents (存亡判断与父节点重分配)
+        alive_agents = []
+        for a in self.agents:
+            if not a.alive:
+                # 机器人已死亡，移至浪费列表
+                self.wasted_agents.append(a)
+            else:
+                # 机器人存活，检查其父节点状态
+                parent_id = a.father_id
+                
+                # 如果当前父节点 ID 存在于已死亡的 Large Agent ID 集合中
+                if parent_id in dead_large_ids:
+                    
+                    if alive_large_map:
+                        # **核心逻辑：找到最近的存活 Large Agent 作为新父节点**
+                        
+                        # 使用 distance() 函数计算与所有存活 Large Agent 的距离，并找到最近的一个
+                        nearest_la = min(
+                            alive_large_map.values(), 
+                            key=lambda la: distance(a.pos, la.pos)
+                        )
+                        
+                        # 重新分配父节点 ID
+                        # (在实际系统中，你可能还需要更新老父节点的 son_ids 列表，但这需要更复杂的逻辑)
+                        a.father_id = nearest_la.id
+                        # print(f"Agent {a.id} 的父节点 {parent_id} 死亡，重新分配给 {nearest_la.id}") 
+
+                    else:
+                        # 没有存活的 Large Agent 了
+                        a.father_id = None
+                        break
+                        # print(f"Agent {a.id} 失去父节点且没有可用的新父节点。")
+                
+                alive_agents.append(a)
+                
+        self.agents = alive_agents
+        print(len(self.wasted_agents))
+        # 1. 创建当前所有存活 Small Agent 的 ID 集合，用于快速查找
+        alive_small_agent_ids = {a.id for a in self.agents}
+
+        # 2. 遍历所有存活 Large Agent，清理其子节点列表
+        for la in self.large_agents:
+            if not la.alive:
+                continue
+            initial_count = len(la.son_ids)
+            
+            # 过滤 la.son_ids，只保留 ID 仍在 alive_small_agent_ids 集合中的子节点
+            new_son_ids = [
+                child_id for child_id in la.son_ids 
+                if child_id in alive_small_agent_ids
+            ]
+            
+            # 如果列表发生了变化，则更新
+            if len(new_son_ids) != initial_count:
+                la.son_ids = new_son_ids
+
 
     def _update(self, dt, comms:Communication, now_time):
         # Tik
