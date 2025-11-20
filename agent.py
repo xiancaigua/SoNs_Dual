@@ -19,6 +19,7 @@ class AgentBase:
         self.alive = True
         self.energy_cost = 0.0  # 初始能量（可扩展）
         self.energy_cost_rate = 0.1 if not is_large else 0.2  # 能量消耗速率（可调）
+        self.energy_max = 1250 if self.is_large else 400
 
         self.sensor_range = sensor_range
         self.local_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)

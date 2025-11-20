@@ -621,7 +621,12 @@ class World:
             la.nav_to_centroid(sons_list)
             if la.death_queue:
                 self.spawn_reinforcement_agent(la.id)
-                la.death_queue.pop(0)
+                la.recognize_danger_area(self)
+                death_info = la.death_queue.pop(0)
+                # pos = death_info['loc']
+
+
+
 
         # 5. 所有 agent 执行 step_motion（跟踪各自的 planned_path）
         for a in self.agents + self.large_agents:
@@ -631,6 +636,10 @@ class World:
                 self.mark_visited(a.pos[0], a.pos[1],a.is_large)
        
         self.check_and_handle_deaths()
+
+        for a in self.agents + self.large_agents:
+            if a.energy_cost > a.energy_max:
+                a.alive = False
 
         # 6.1. 预处理 Large Agents (确定存活/死亡状态)
         # 识别已死亡的 Large Agent ID 集合

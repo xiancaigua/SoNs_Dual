@@ -33,9 +33,9 @@ def main(rounds=1):
     comms = Communication(packet_loss=COMM_PACKET_LOSS, delay=COMM_DELAY)
     map_files = get_map_files("map")
     # save_filename = f"world_seed_233174_init_state.pkl"
-    save_filename = map_files[rounds//100][1]
-    world = World.load_state(save_filename)
-    # world = World(seed=SEED)
+    # save_filename = map_files[rounds//100][1]
+    # world = World.load_state(save_filename)
+    world = World(seed=110716)
     # world.save_state(f"world_seed_{SEED}_init_state.pkl")
     if BASELINE:
         world.set_state()
