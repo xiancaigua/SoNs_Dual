@@ -31,11 +31,11 @@ def main(rounds=1):
 
     # communication system
     comms = Communication(packet_loss=COMM_PACKET_LOSS, delay=COMM_DELAY)
-    map_files = get_map_files("map")
-    # save_filename = f"world_seed_233174_init_state.pkl"
+    world_seeds = [110716, 710, 8848, 1107, 233174, 1919148]
+    # map_files = get_map_files("map")
     # save_filename = map_files[rounds//100][1]
     # world = World.load_state(save_filename)
-    world = World(seed=110716)
+    world = World(seed=world_seeds[rounds//100])
     # world.save_state(f"world_seed_{SEED}_init_state.pkl")
     if BASELINE:
         world.set_state()
@@ -106,7 +106,7 @@ def main(rounds=1):
                 pygame.image.save(final_image, f"simulation_screenshots/success_{timestamp}.png")
             paused = True
             running = False
-        elif len(world.large_agents) == 0 or world.spawn_times >= 100:
+        elif len(world.large_agents) == 0 or world.spawn_times >= MAX_TOLERATE:
             simulation_result = "failure"
             print("All agents destroyed. Mission failed.")
             # 保存失败截图
@@ -115,10 +115,9 @@ def main(rounds=1):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 pygame.image.save(final_image, f"simulation_screenshots/failure_{timestamp}.png")
             paused = True
-            running = False
-            
-        elif sim_time > 200.0:
-            simulation_result = "timeout"
+            running = False  
+        elif sim_time > 60.0:
+            simulation_result = "failure"
             print("Max sim time reached.")
             # 保存超时截图
             if VISUALIZE:
@@ -148,6 +147,6 @@ def main(rounds=1):
 
 
 if __name__ == "__main__":
-    for i in range(500): 
+    for i in range(600): 
         main(i)
     sys.exit(0)

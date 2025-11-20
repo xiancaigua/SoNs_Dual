@@ -676,13 +676,25 @@ class LargeAgent(AgentBase):
                 return 
 
         # --- 阶段 2: 日常跟随模式 (Centroid Following) ---
-        # 只有在 rescue_target 为 None 时才会执行到这里        
-        if my_children:
-            for child in my_children:
-                child.hold_state = False
-            # 计算重心
-            xs = [c.pos[0] for c in my_children]
-            ys = [c.pos[1] for c in my_children]
+        # 只有在 rescue_target 为 None 时才会执行到这里  
+        valid_children = []
+        BASE_POS = world.spawn_center
+        for child in my_children:
+            child.hold_state = False
+            
+            # 判断子节点是否远离基地 (排除在 Base 附近游荡的节点)
+            dist_from_base = math.hypot(child.pos[0] - BASE_POS[0], child.pos[1] - BASE_POS[1])
+            
+            # 满足以下任一条件则认为子节点是有效的：
+            # a) 它已经远离基地超过阈值。
+            # b) 它有一个明确的、非基地的任务目标。 (可选，但更健壮)
+            if dist_from_base >= 200 or (child.has_goal and distance(child.goal, BASE_POS) > 50):
+                valid_children.append(child)
+
+        if valid_children:
+            
+            xs = [c.pos[0] for c in valid_children]
+            ys = [c.pos[1] for c in valid_children]
             centroid = (sum(xs) / len(xs), sum(ys) / len(ys))
             
             # 规划去重心
@@ -700,7 +712,6 @@ class LargeAgent(AgentBase):
             if should_update_centroid:
                 self.navigate_to_point(centroid, world)
         else:
-            # 没有子节点？原地待命或者随机漫步
             pass
 
     def recognize_danger_area(self, world):

@@ -2,7 +2,7 @@
 # 参数配置（可以调整）
 # -----------------------------
 VISUALIZE = True  # 设置为 False 时禁用可视化
-BASELINE = True  # 使用基线智能体
+BASELINE = False  # 使用基线智能体
 
 SCREEN_W, SCREEN_H = 1000, 700
 WORLD_W, WORLD_H = SCREEN_W, SCREEN_H
@@ -10,6 +10,7 @@ FPS = 100
 
 NUM_AGENTS = 6
 NUM_LARGE = 3
+MAX_TOLERATE = 40
 NUM_OBSTACLES = 10
 NUM_DANGER_ZONES = 15
 
@@ -20,7 +21,7 @@ GRID_H = WORLD_H // GRID_CELL
 AGENT_RADIUS = 6
 LARGE_RADIUS = 10
 
-SENSOR_SMALL = 50
+SENSOR_SMALL = 60
 SENSOR_LARGE = 30
 
 AGENT_MAX_SPEED = 60.0  # pixels per second

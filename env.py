@@ -107,30 +107,6 @@ class World:
             la.multi_behavior = ERRTFrontierAssignmentBehavior()
         for a in self.agents:
             a.behavior = PathPlanningBehavior()
-    # ========== 基础工具函数 ==========
-    def is_in_obstacle(self, x, y):
-        """判断坐标是否在障碍物内部"""
-        for obs in self.obstacles:
-            if obs.rect.collidepoint(x, y):
-                return True
-        return False
-
-    def is_in_danger(self, x, y):
-        """判断坐标是否在危险区内"""
-        for dz in self.danger_zones:
-            if dz.contains((x,y)):
-                return True
-        return False
-
-    def random_free_pos(self, margin=30):
-        for _ in range(5000):
-            x = random.uniform(margin, WORLD_W - margin)
-            y = random.uniform(margin, WORLD_H - margin)
-            if self.is_in_obstacle(x, y) or self.is_in_danger(x, y):
-                continue
-            return (x, y)
-        return (WORLD_W / 2, WORLD_H / 2)
-
     # ========== 环境生成 ==========
     def generate_static_obstacles(self, n=NUM_OBSTACLES):
 
@@ -224,16 +200,6 @@ class World:
             sa.local_map = init_map.copy()
         self.brain.local_map = init_map.copy()
         self.brain.known_map = init_map.copy()
-        self.spawn_times += num
-
-    def find_agent_by_id(self, id_):
-        if id_ is None:
-            # print(f"Warning: find_agent_by_id called {id_} with None id")
-            return None
-        for a in self.agents + self.large_agents:
-            if a.id == id_:
-                return a
-        return None
 
     def spawn_reinforcement_agent(self, parent_large_id):
             """
@@ -265,6 +231,7 @@ class World:
             # 注册关系
             parent_agent.son_ids.append(new_id)
             self.agents.append(new_sa)
+            self.spawn_times += 1
             
             print(f"[Reinforcement] New Agent {new_id} dispatched for Large {parent_large_id}")
 
@@ -300,67 +267,6 @@ class World:
 
         self.victim = Victim(best_point[0], best_point[1])
         return self.victim
-
-    def check_and_handle_deaths(self):
-            """
-            处理所有机器人的死亡判定逻辑
-            Small: 自身+上下左右5点判定 -> 死亡 -> 上报 Large
-            Large: 自身中心判定 -> 死亡
-            """
-            
-            # 1. 检测 Small Agents (5点判定)
-            # 偏移量：中心，上，下，左，右 (单位：像素，假设1个像素或者微小偏移)
-            # 注意：如果坐标是连续的，这里的 offset 可以是 1 或 2 像素
-            offsets = [(0,0)]
-            # offsets = [(0,0), (0, 1), (0, -1), (1, 0), (-1, 0)]
-            for sa in self.agents:
-                if not sa.alive: continue
-                sa_cell_pos = cell_of_pos(sa.pos)
-                
-                hit_danger = False
-                fatal_pos = None
-                
-                for dx, dy in offsets:
-                    check_x = sa_cell_pos[0] + dx
-                    check_y = sa_cell_pos[1] + dy
-                    if 0<=check_x<GRID_W and 0<=check_y<GRID_H:
-                        if self.ground_grid[check_y,check_x] == DANGER:
-                            hit_danger = True
-                            fatal_pos = (check_x, check_y)
-                            break
-                
-                if hit_danger:
-                    sa.alive = False
-                    print(f"!! Agent {sa.id} DIED at {fatal_pos}. Reporting to Father {sa.father_id}.")
-                    
-                    # 查找父节点并上报
-                    father = next((la for la in self.large_agents if la.id == sa.father_id), None)
-                    if father and father.alive:
-                        # 父节点记录：(死亡子节点ID, 子节点生前最后一个安全位置)
-                        # 假设 sa.last_safe_pos 在每次 move 前更新
-                        safe_pos = sa.hist[-2] 
-                        father.death_queue.append({
-                            'child_id': sa.id,
-                            'loc': safe_pos # 这个pos是世界坐标
-                        })
-                        # 标记致死的危险区域点到父节点地图 (可选)
-                        cx, cy = fatal_pos
-                        if 0 <= cx < GRID_W and 0 <= cy < GRID_H:
-                            father.local_map[cy, cx] = DANGER
-                            father.known_map[cy, cx] = DANGER
-                            
-                            self.visited_grid[cy, cx] = DANGER
-                            self.known_grid[cy, cx] = DANGER
-                            self.brain.known_map[cy, cx] = DANGER
-
-        # 2. 检测 Large Agents (仅中心判定)
-            for la in self.large_agents:
-                if not la.alive: continue
-                la_cell_pos = cell_of_pos(la.pos)
-                if 0<=la_cell_pos[0]<GRID_W and 0<=la_cell_pos[1]<GRID_H:
-                    if self.ground_grid[la_cell_pos[1], la_cell_pos[0]] == DANGER:
-                        la.alive = False
-                        print(f"!!!! Large Agent {la.id} DIED in Danger Zone !!!!")
 
     def update(self, dt, comms: Communication, now_time):
         """主仿真循环，每一帧调用一次"""
@@ -517,63 +423,7 @@ class World:
             if len(new_son_ids) != initial_count:
                 la.son_ids = new_son_ids
 
-    def astar(self, grid, start, goal):
-        """基于栅格地图的A*"""
-        w, h = grid.shape[1], grid.shape[0]
-        open_set = [(0, start)]
-        came_from = {}
-        gscore = {start: 0}
-        fscore = {start: abs(start[0] - goal[0]) + abs(start[1] - goal[1])}
-
-        while open_set:
-            _, current = heapq.heappop(open_set)
-            if current == goal:
-                return True  # 存在路径即可
-            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
-                nx, ny = current[0] + dx, current[1] + dy
-                if 0 <= nx < w and 0 <= ny < h and grid[ny][nx] == FREE:
-                    ng = gscore[current] + 1
-                    if (nx, ny) not in gscore or ng < gscore[(nx, ny)]:
-                        came_from[(nx, ny)] = current
-                        gscore[(nx, ny)] = ng
-                        fscore[(nx, ny)] = ng + abs(nx - goal[0]) + abs(ny - goal[1])
-                        heapq.heappush(open_set, (fscore[(nx, ny)], (nx, ny)))
-        return None
-
-    def coverage_percentage(self):
-        total = GRID_W * GRID_H
-        # count union of explored cells
-        explored = 0
-        union_set = set()
-        for a in (self.agents + self.large_agents):
-            union_set |= a.get_local_explored_cells()
-        explored = len(union_set)
-        return (explored / total) * 100.0
-
-    def mark_visited(self, x, y, is_large):
-        """记录机器人经过的安全栅格"""
-        cx, cy = cell_of_pos((x, y))
-        if is_large:
-            if 0 <= cx < GRID_W and 0 <= cy < GRID_H and \
-                self.visited_grid[cy, cx] != OBSTACLE and self.visited_grid[cy, cx] != DANGER:
-                self.visited_grid[cy, cx] = FREE
-        else:
-            dirs = [(0,0)]
-            # dirs = [(0,0), (1,0), (-1,0), (0,1), (0,-1)]
-            for dx, dy in dirs:
-                nx, ny = cx + dx, cy + dy
-                if 0 <= nx < GRID_W and 0 <= ny < GRID_H and \
-                    self.visited_grid[ny, nx] != OBSTACLE and self.visited_grid[cy, cx] != DANGER:
-                    self.visited_grid[ny, nx] = FREE
-
     def update_baseline(self, dt, comms:Communication, now_time):
-        # Tik
-        # 结束判断
-        # 死亡节点确认与剔除
-        # 动态脑节点选举
-        # 分层通信结构：小节点向脑节点周期发送 map_patch，脑节点整合地图
-        # 信息整合机制：receiver.integrate_map_patch() 更新全局地图 集体形成共享认知
-        # 自组织任务分配 执行 reason_and_assign() 并广播目标 忽视层级结构所有机器人都可以收到，大小结点之间无指挥关系
         self.time += dt
         # 1. 更新所有机器人本地观测（small/middle/large 统一）
         for a in self.agents + self.large_agents:
@@ -708,7 +558,6 @@ class World:
             # 如果列表发生了变化，则更新
             if len(new_son_ids) != initial_count:
                 la.son_ids = new_son_ids
-
 
     def _update(self, dt, comms:Communication, now_time):
         # Tik
@@ -1090,6 +939,84 @@ class World:
         text = font.render(title, True, (255, 255, 255))
         screen.blit(text, (x_offset + 30, y_offset - 20))
 
+    # ========== 基础工具函数 ==========
+    def check_and_handle_deaths(self):
+            """
+            处理所有机器人的死亡判定逻辑
+            Small: 自身+上下左右5点判定 -> 死亡 -> 上报 Large
+            Large: 自身中心判定 -> 死亡
+            """
+            
+            # 1. 检测 Small Agents (5点判定)
+            # 偏移量：中心，上，下，左，右 (单位：像素，假设1个像素或者微小偏移)
+            # 注意：如果坐标是连续的，这里的 offset 可以是 1 或 2 像素
+            offsets = [(0,0)]
+            # offsets = [(0,0), (0, 1), (0, -1), (1, 0), (-1, 0)]
+            for sa in self.agents:
+                if not sa.alive: continue
+                sa_cell_pos = cell_of_pos(sa.pos)
+                
+                hit_danger = False
+                fatal_pos = None
+                
+                for dx, dy in offsets:
+                    check_x = sa_cell_pos[0] + dx
+                    check_y = sa_cell_pos[1] + dy
+                    if 0<=check_x<GRID_W and 0<=check_y<GRID_H:
+                        if self.ground_grid[check_y,check_x] == DANGER:
+                            hit_danger = True
+                            fatal_pos = (check_x, check_y)
+                            break
+                
+                if hit_danger:
+                    sa.alive = False
+                    print(f"!! Agent {sa.id} DIED at {fatal_pos}. Reporting to Father {sa.father_id}.")
+                    
+                    # 查找父节点并上报
+                    father = next((la for la in self.large_agents if la.id == sa.father_id), None)
+                    if father and father.alive:
+                        # 父节点记录：(死亡子节点ID, 子节点生前最后一个安全位置)
+                        # 假设 sa.last_safe_pos 在每次 move 前更新
+                        safe_pos = sa.hist[-2] 
+                        father.death_queue.append({
+                            'child_id': sa.id,
+                            'loc': safe_pos # 这个pos是世界坐标
+                        })
+                        # 标记致死的危险区域点到父节点地图 (可选)
+                        cx, cy = fatal_pos
+                        if 0 <= cx < GRID_W and 0 <= cy < GRID_H:
+                            father.local_map[cy, cx] = DANGER
+                            father.known_map[cy, cx] = DANGER
+                            
+                            self.visited_grid[cy, cx] = DANGER
+                            self.known_grid[cy, cx] = DANGER
+                            self.brain.known_map[cy, cx] = DANGER
+
+        # 2. 检测 Large Agents (仅中心判定)
+            for la in self.large_agents:
+                if not la.alive: continue
+                la_cell_pos = cell_of_pos(la.pos)
+                if 0<=la_cell_pos[0]<GRID_W and 0<=la_cell_pos[1]<GRID_H:
+                    if self.ground_grid[la_cell_pos[1], la_cell_pos[0]] == DANGER:
+                        la.alive = False
+                        print(f"!!!! Large Agent {la.id} DIED in Danger Zone !!!!")
+
+    def mark_visited(self, x, y, is_large):
+        """记录机器人经过的安全栅格"""
+        cx, cy = cell_of_pos((x, y))
+        if is_large:
+            if 0 <= cx < GRID_W and 0 <= cy < GRID_H and \
+                self.visited_grid[cy, cx] != OBSTACLE and self.visited_grid[cy, cx] != DANGER:
+                self.visited_grid[cy, cx] = FREE
+        else:
+            dirs = [(0,0)]
+            # dirs = [(0,0), (1,0), (-1,0), (0,1), (0,-1)]
+            for dx, dy in dirs:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < GRID_W and 0 <= ny < GRID_H and \
+                    self.visited_grid[ny, nx] != OBSTACLE and self.visited_grid[cy, cx] != DANGER:
+                    self.visited_grid[ny, nx] = FREE
+
     def debug_verify_map_fusion(self):
         """
         检查：子节点中的已知格子是否仍然在父节点里是 UNKNOWN
@@ -1120,6 +1047,71 @@ class World:
                     print("------------------------------------------------------")
                 else:
                     print(f"[DEBUG] Child {sid} merged into Father {la.id} SUCCESSFULLY.")
+
+    def astar(self, grid, start, goal):
+        """基于栅格地图的A*"""
+        w, h = grid.shape[1], grid.shape[0]
+        open_set = [(0, start)]
+        came_from = {}
+        gscore = {start: 0}
+        fscore = {start: abs(start[0] - goal[0]) + abs(start[1] - goal[1])}
+
+        while open_set:
+            _, current = heapq.heappop(open_set)
+            if current == goal:
+                return True  # 存在路径即可
+            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nx, ny = current[0] + dx, current[1] + dy
+                if 0 <= nx < w and 0 <= ny < h and grid[ny][nx] == FREE:
+                    ng = gscore[current] + 1
+                    if (nx, ny) not in gscore or ng < gscore[(nx, ny)]:
+                        came_from[(nx, ny)] = current
+                        gscore[(nx, ny)] = ng
+                        fscore[(nx, ny)] = ng + abs(nx - goal[0]) + abs(ny - goal[1])
+                        heapq.heappush(open_set, (fscore[(nx, ny)], (nx, ny)))
+        return None
+
+    def is_in_obstacle(self, x, y):
+        """判断坐标是否在障碍物内部"""
+        for obs in self.obstacles:
+            if obs.rect.collidepoint(x, y):
+                return True
+        return False
+
+    def is_in_danger(self, x, y):
+        """判断坐标是否在危险区内"""
+        for dz in self.danger_zones:
+            if dz.contains((x,y)):
+                return True
+        return False
+
+    def random_free_pos(self, margin=30):
+        for _ in range(5000):
+            x = random.uniform(margin, WORLD_W - margin)
+            y = random.uniform(margin, WORLD_H - margin)
+            if self.is_in_obstacle(x, y) or self.is_in_danger(x, y):
+                continue
+            return (x, y)
+        return (WORLD_W / 2, WORLD_H / 2)
+
+    def find_agent_by_id(self, id_):
+        if id_ is None:
+            # print(f"Warning: find_agent_by_id called {id_} with None id")
+            return None
+        for a in self.agents + self.large_agents:
+            if a.id == id_:
+                return a
+        return None
+
+    def coverage_percentage(self):
+        total = GRID_W * GRID_H
+        # count union of explored cells
+        explored = 0
+        union_set = set()
+        for a in (self.agents + self.large_agents):
+            union_set |= a.get_local_explored_cells()
+        explored = len(union_set)
+        return (explored / total) * 100.0
 
 
     def save_state(self, filename="world_state.pkl"):
