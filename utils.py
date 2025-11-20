@@ -76,39 +76,6 @@ def create_summary_image(screen, world, sim_time, result, font):
     # 复制当前屏幕内容
     summary_surface.blit(screen, (0, 0))
     
-    # # 添加详细的统计信息区域
-    # info_y = SCREEN_H + 10
-    
-    # # 标题
-    # title_text = f"仿真总结 - {result}"
-    # title_surf = font.render(title_text, True, (0, 0, 0))
-    # summary_surface.blit(title_surf, (20, info_y))
-    
-    # # 基本信息
-    # info_lines = [
-    #     f"仿真时间: {sim_time:.2f}秒",
-    #     f"地图覆盖率: {world.coverage_percentage():.2f}%",
-    #     f"幸存小型机器人: {sum(1 for a in world.agents if a.alive)}/{len(world.agents)}",
-    #     f"幸存大型机器人: {sum(1 for la in world.large_agents if la.alive)}/{len(world.large_agents)}",
-    #     f"受害者状态: {'已救援' if world.victim.rescued else '未找到'}",
-    #     f"障碍物数量: {len(world.obstacles)}",
-    #     f"危险区域: {len(world.danger_zones)}"
-    # ]
-    
-    # for i, line in enumerate(info_lines):
-    #     text_surf = font.render(line, True, (0, 0, 0))
-    #     summary_surface.blit(text_surf, (20, info_y + 30 + i * 25))
-    
-    # # 机器人轨迹信息
-    # traj_y = info_y + 30 + len(info_lines) * 25 + 10
-    # traj_title = font.render("机器人轨迹长度:", True, (0, 0, 0))
-    # summary_surface.blit(traj_title, (20, traj_y))
-    
-    # for i, agent in enumerate(world.agents[:5]):  # 显示前5个机器人的信息
-    #     traj_info = f"机器人 {agent.id}: 轨迹点{len(agent.hist)}个"
-    #     traj_surf = font.render(traj_info, True, (0, 0, 0))
-    #     summary_surface.blit(traj_surf, (40, traj_y + 25 + i * 20))
-    
     return summary_surface
 
 def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=None, map_id=None):
