@@ -102,7 +102,11 @@ class World:
         self.brain = BrainAgent(-1, self.spawn_center[0],self.spawn_center[1])
         self.spawn_agents(NUM_LARGE)
         self.place_victim()   # victim放在最后，以确保存在brain node
-
+    def set_state(self):
+        for la in self.large_agents:
+            la.multi_behavior = ERRTFrontierAssignmentBehavior()
+        for a in self.agents:
+            a.behavior = PathPlanningBehavior()
     # ========== 基础工具函数 ==========
     def is_in_obstacle(self, x, y):
         """判断坐标是否在障碍物内部"""
@@ -594,18 +598,30 @@ class World:
         # 通常 brain / large 需要得到全局一致地图
         for a in self.agents:
             if a.alive:
-                self.large_agents[a.father_id].known_map = np.maximum(self.large_agents[a.father_id].known_map, a.local_map)
-                self.known_grid = np.maximum(self.known_grid, self.large_agents[a.father_id].known_map)
+                for la in self.large_agents:
+                    if a.father_id == la.id:
+                        la.known_map = np.maximum(la.known_map, a.local_map)
+                        self.known_grid = np.maximum(self.known_grid, la.known_map)
         self.brain.known_map = self.known_grid
 
         for la in self.large_agents:
             if not la.alive:
                 continue
-            if self.time - la.last_reason_time > BRAIN_REASON_INTERVAL:
-                sons_list = [a for a in self.agents if a.father_id == la .id]
+            sons_list = [a for a in self.agents if a.father_id == la.id]
+            if now_time - la.last_reason_time > BRAIN_REASON_INTERVAL:
                 assignments = la.large_reason(sons_list)
-                for id, target in assignments.item():
-                    
+                # for id, target in assignments.item():
+                for son in sons_list:
+                    assign = assignments[son.id]
+                    son.task_seq = [assign]
+                    son.has_goal = True
+                    if son.task_seq:
+                        son.plan_path_sequence()
+                la.last_reason_time = now_time
+            la.nav_to_centroid(sons_list)
+            if la.death_queue:
+                self.spawn_reinforcement_agent(la.id)
+                la.death_queue.pop(0)
 
         # 5. 所有 agent 执行 step_motion（跟踪各自的 planned_path）
         for a in self.agents + self.large_agents:
@@ -615,7 +631,7 @@ class World:
                 self.mark_visited(a.pos[0], a.pos[1],a.is_large)
        
         self.check_and_handle_deaths()
-        
+
         # 6.1. 预处理 Large Agents (确定存活/死亡状态)
         # 识别已死亡的 Large Agent ID 集合
         dead_large_ids = {la.id for la in self.large_agents if not la.alive}

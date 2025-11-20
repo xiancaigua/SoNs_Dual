@@ -481,10 +481,7 @@ class LargeAgent(AgentBase):
         self.brain_reason_time = -10
         self.known_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
         self.is_brain = is_brain  # LargeAgent作为脑节点
-        if multi_behavior is not None:
-            self.multi_behavior = multi_behavior
-        else:
-            self.multi_behavior = ERRTFrontierAssignmentBehavior()
+        self.multi_behavior = ERRTFrontierAssignmentBehavior()
         self.brain_planner = BrainGlobalPlanner()
 
         self.assignments = None
@@ -527,6 +524,77 @@ class LargeAgent(AgentBase):
             if self.known_map[i,j] == DANGER:
                 continue
             self.known_map[i,j] = self.local_map[i,j]
+
+    def nav_to_centroid(self, my_children):
+        # 只有在 rescue_target 为 None 时才会执行到这里        
+        if my_children:
+            # 计算重心
+            xs = [c.pos[0] for c in my_children]
+            ys = [c.pos[1] for c in my_children]
+            centroid = (sum(xs) / len(xs), sum(ys) / len(ys))
+            
+            # 规划去重心
+            # 注意：为了避免每一帧都疯狂重规划导致抖动/性能下降，可以加一个距离阈值
+            # 只有当当前目标距离新重心太远，或者当前没有目标时才重规划
+            should_update_centroid = False
+            if not self.has_goal:
+                should_update_centroid = True
+            else:
+                # 如果当前目标和现在的重心偏差超过 30 像素，则更新
+                curr_goal_dist = math.hypot(self.goal[0] - centroid[0], self.goal[1] - centroid[1])
+                if curr_goal_dist > 30.0:
+                    should_update_centroid = True
+            
+            if should_update_centroid:
+                self.planned_path = self.base_astar_path(self.pos, centroid)
+                self.has_goal = True
+                self.goal = centroid
+        else:
+            # 没有子节点？原地待命或者随机漫步
+            pass
+    def base_astar_path(self, start_pos, goal_pos):
+        sx, sy = cell_of_pos((start_pos[0], start_pos[1]))
+        gx, gy = cell_of_pos((goal_pos[0], goal_pos[1]))
+
+        open_set = []
+        heapq.heappush(open_set, (0, (sx, sy)))
+        came = {}
+        g_score = { (sx, sy): 0 }
+
+        def h(x, y):  # 曼哈顿启发
+            return abs(x - gx) + abs(y - gy)
+
+        while open_set:
+            _, (x, y) = heapq.heappop(open_set)
+
+            if (x, y) == (gx, gy):
+                # reconstruct
+                path = []
+                cur = (x, y)
+                while cur in came:
+                    path.append(pos_of_cell(*cur))
+                    cur = came[cur]
+                path.reverse()
+                return path
+
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
+                (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                nx, ny = x + dx, y + dy
+
+                # 越界 or 危险 or 障碍
+                if not (0 <= nx < GRID_W and 0 <= ny < GRID_H):
+                    continue
+                if not self.known_map[ny, nx] == FREE:
+                    continue
+
+                tentative = g_score[(x, y)] + 1
+                if (nx, ny) not in g_score or tentative < g_score[(nx, ny)]:
+                    g_score[(nx, ny)] = tentative
+                    priority = tentative + h(nx, ny)
+                    heapq.heappush(open_set, (priority, (nx, ny)))
+                    came[(nx, ny)] = (x, y)
+
+        return None
 
     def update_strategy(self, world, my_children):
         """

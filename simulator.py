@@ -37,6 +37,8 @@ def main(rounds=1):
     world = World.load_state(save_filename)
     # world = World(seed=SEED)
     # world.save_state(f"world_seed_{SEED}_init_state.pkl")
+    if BASELINE:
+        world.set_state()
 
     running = True
     paused = False
