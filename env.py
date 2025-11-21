@@ -591,16 +591,23 @@ class World:
                         self.local_map = self.known_grid
         self.brain.known_map = self.known_grid
 
+        if now_time - self.brain.last_reason_time > BRAIN_REASON_INTERVAL:
+            assignments = self.brain.find_nbv_targets_for_assignment(self.large_agents, len(self.large_agents+self.agents))
+            self.brain.last_reason_time = now_time
+            for la in self.large_agents + self.agents:
+                la.task_seq = [assignments.pop()]
+                la.plan_path_sequence()
+
         for la in self.large_agents:
-            if now_time - la.last_reason_time > BRAIN_REASON_INTERVAL:
-                sons_list = [a for a in self.agents if a.father_id == la.id]
-                assignments = la.find_nbv_targets_for_assignment(self.large_agents,len(sons_list))
-                la.last_reason_time = now_time
-                la.assign_targets(assignments, sons_list)
+            # if now_time - la.last_reason_time > BRAIN_REASON_INTERVAL:
+            #     sons_list = [a for a in self.agents if a.father_id == la.id]
+            #     assignments = la.find_nbv_targets_for_assignment(self.large_agents,len(sons_list)+1)
+            #     la.last_reason_time = now_time
+            #     la.assign_targets(assignments, sons_list)
 
                 if la.death_queue:
                     self.spawn_reinforcement_agent(la.id)
-                    # la.recognize_danger_area(self)
+                    la.recognize_danger_area(self)
                     death_info = la.death_queue.pop(0)
                     pos = death_info['dead_pos']
                     la.known_map[pos[1],pos[1]] = DANGER
