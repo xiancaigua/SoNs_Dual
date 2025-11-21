@@ -44,7 +44,7 @@ class AgentBase:
         if behavior is not None:
             self.behavior = behavior
         else:
-            self.behavior = DMCEExplorationBehavior()
+            self.behavior = PathPlanningBehavior()
 
     # =====================================================
     # 感知函数：不再能直接探测到危险区
@@ -104,11 +104,6 @@ class AgentBase:
         """返回该agent已探索（非UNKNOWN）的格子集合（i,j）"""
         inds = np.where(self.local_map != UNKNOWN)
         return set(zip(inds[0].tolist(), inds[1].tolist()))
-
-    def MCTS_reason(self, agents):
-        plan = self.behavior.decide(self,agents)
-        self.task_seq = [plan[self.id]]
-        self.plan_path_sequence()
 
     def plan_path_sequence(self, unknown_cost=5.0, danger_proximity_penalty=4.0, proximity_radius=2):
         """
@@ -293,12 +288,17 @@ class AgentBase:
             # 原来的 astar 保留，但这里 multi-goal 不适用
             path_rc = astar_multi((cur_r, cur_c), [frontiers[0]])  # ★ MODIFIED: 用 multi 兼容单目标
             if path_rc is not None:
+                print("Warning:正常规划失败!采用备用的Frontier-based方法")
                 selected_path = path_rc
-            planned_cells = selected_path
+                planned_cells = selected_path
+            else:
+                print("Warning:备用Frontier-based也规划失败了")
 
         # -------------------
         # 原路径转换逻辑保持不变
         # -------------------
+        if planned_cells is None:
+            return False,[]
         planned_world = []
         for (r, c) in planned_cells:
             px, py = pos_of_cell(c, r)
@@ -487,7 +487,7 @@ class LargeAgent(AgentBase):
         self.brain_reason_time = -10
         self.known_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
         self.is_brain = is_brain  # LargeAgent作为脑节点
-        self.multi_behavior = ERRTFrontierAssignmentBehavior()
+        self.multi_behavior = InformedLocalAssignmentBehavior()
         self.brain_planner = BrainGlobalPlanner()
 
         self.assignments = None
@@ -496,6 +496,128 @@ class LargeAgent(AgentBase):
         # === 救援相关属性 ===
         self.death_queue = []
         self.rescue_target = None
+
+    def find_nbv_targets_for_assignment(self, all_large_agents, num_targets=4):
+        """
+        基于 Next Best Viewpoint (NBV) 策略寻找最优的分配目标点。
+        
+        NBV 效用函数: Utility = (Information Gain) / (Distance Cost)
+        
+        Args:
+            all_large_agents (list): 所有大型探索机器人列表 (用于协作惩罚)。
+            num_targets (int): 需要返回的目标点数量（例如 4 个）。
+            
+        Returns:
+            list: 最佳 NBV 目标的坐标列表 [(x1, y1), (x2, y2), ...]
+        """
+        # 1. 初始化地图和位置
+        grid = self.known_map
+        my_pos = self.pos
+        cell_of_mypos = cell_of_pos(my_pos)
+        # 2. 生成 NBV 候选点 (通常为前沿聚类中心)
+        try:
+            # 假设 _find_frontier_centroids 返回所有全局前沿点中心
+            candidates = self._find_frontier_centroids(grid, cell_of_mypos)
+        except AttributeError:
+            print("Error: _find_frontier_centroids not found. Cannot run NBV.")
+            return []
+
+        if not candidates:
+            return []
+
+        # 3. 获取队友计划 (实现协作)
+        peer_plans = self._collect_peer_plans(self, all_large_agents)
+        
+        # 用于存储所有候选点的 (效用值, 目标点坐标)
+        scored_targets = []
+        
+        # 4. 评估每个候选点的效用 (Utility)
+        for target_pos in candidates:
+            
+            # 4.1. 成本估算 (Cost Estimation)
+            # 使用欧氏距离作为路径成本的快速近似
+            cost = math.hypot(target_pos[0] - my_pos[0], target_pos[1] - my_pos[1])
+            
+            # 设置最小成本阈值，避免距离太短导致效用值过高，鼓励向外走
+            min_cost_threshold = 10.0 # 假设 10 个世界坐标单位
+            if cost < min_cost_threshold:
+                cost = min_cost_threshold
+
+            # 4.2. 增益估算 (Information Gain)
+            try:
+                # _evaluate_state 应该返回的信息增益已经包含了协作惩罚
+                gain = self._evaluate_state(target_pos, grid, peer_plans)
+            except AttributeError:
+                print("Error: _evaluate_state not found. Cannot calculate gain.")
+                return [] # 错误处理
+            
+            if gain <= 0:
+                utility = 0.0
+            else:
+                # 4.3. 效用计算 (Utility Calculation)
+                # 目标是最大化单位距离下的信息增益
+                utility = gain / cost
+            
+            # 存储结果
+            scored_targets.append((utility, target_pos))
+
+        # 5. 选择最优目标并排序
+        
+        # 按效用值降序排列
+        scored_targets.sort(key=lambda x: x[0], reverse=True)
+        
+        # 提取前 num_targets 个目标的坐标
+        best_targets = [
+            target_info[1]  # 目标点坐标 (第二个元素)
+            for target_info in scored_targets[:num_targets]
+        ]
+        
+        return best_targets
+
+    def assign_targets(self, targets_list, sons_list):
+        """
+        将 MCTS 规划出的目标点分配给自身和小机器人。
+        targets_list: MCTS 返回的最佳目标点列表 [(x1, y1), (x2, y2), (x3, y3), (x4, y4)]
+        """
+        if not targets_list:
+            return
+
+        # 1. 划分目标
+        # 目标总数应为 N，取前 N-1 个分配给小机器人，第 N 个（即第4个）给大机器人自己。
+        # 优化：为了避免大机器人抢占最好的点，通常会采用一个简单的分配策略，例如最近分配或匈牙利分配。
+        
+        # 简单策略：前 N-1 个分配给 N-1 个小机器人，最后一个（最不“好”的）留给自己
+        # 注意：DMCE 返回的 targets_list 是按 MCTS 评估价值（访问次数/收益）排序的。
+
+        # N-1 个目标分配给小机器人
+        child_targets = targets_list[:len(sons_list)] 
+        # 剩余的目标留给自己和未分配的小机器人
+        remaining_targets = targets_list[len(sons_list):]
+        
+        # 2. 给大机器人自己分配目标
+        # 策略：如果剩余目标点还有，取下一个点作为自己的目标。如果不够，就使用第一个分配给小机器人后剩下的最佳点。
+        if remaining_targets:
+            my_target = remaining_targets[0]
+        else:
+            # 如果小机器人数量 > MCTS 规划点数，则大机器人先不规划
+            my_target = None 
+
+        # 3. 更新大机器人的任务序列
+        if my_target:
+            # 大机器人的目标是 MCTS 规划出来的点
+            self.task_seq = [my_target] 
+            self.plan_path_sequence() # 规划路径到 MCTS 目标
+
+        # 4. 更新小机器人的目标
+        for i, son in enumerate(sons_list):
+            if i < len(child_targets):
+                son_target = child_targets[i]
+                # 假设 small agent 有一个 set_target 方法
+                son.task_seq = [son_target] 
+                son.plan_path_sequence() # 规划小机器人的路径
+
+        # 存储所有分配的目标点，供其他大机器人做协作惩罚时使用
+        self.target_list = child_targets + ([my_target] if my_target else [])
 
     def large_reason(self, children):
         if len(children) == 0:
@@ -558,6 +680,7 @@ class LargeAgent(AgentBase):
         else:
             # 没有子节点？原地待命或者随机漫步
             pass
+
     def base_astar_path(self, start_pos, goal_pos):
         sx, sy = cell_of_pos((start_pos[0], start_pos[1]))
         gx, gy = cell_of_pos((goal_pos[0], goal_pos[1]))
@@ -1056,6 +1179,115 @@ class LargeAgent(AgentBase):
                         q.append((nx, ny))
             return None
 
+    def _collect_peer_plans(self, my_agent, all_agents):
+        """
+        收集其他**大机器人**的未来计划 (轨迹点列表)。
+        注意：这里的 all_agents 应该是所有大型探索机器人。
+        """
+        plans = []
+        # 遍历所有大机器人，收集它们的计划。
+        for a in all_agents: 
+            if a.id != my_agent.id and a.alive:
+                # 假设 large agent 有 planned_path 属性 (指向它的目标点)
+                # 或者 a.task_seq 存储了它当前的下一个目标点
+                if hasattr(a, 'planned_path') and a.planned_path:
+                    plans.append(a.planned_path)
+                elif hasattr(a, 'task_seq') and a.task_seq:
+                    # 假设 task_seq 列表的第一个元素是下一个目标点
+                    plans.append([a.task_seq[0]]) 
+                elif hasattr(a, 'target_list') and a.target_list:
+                    # 收集其分配给小机器人的所有目标点，这些都应该被避让
+                    plans.extend(a.target_list)
+        return plans
+
+    def _evaluate_state(self, pos, grid, peer_plans):
+        """
+        计算收益 (Reward Function)。
+        """
+        # 1. 模拟传感器视野
+        visible_cells = self._get_visible_cells(pos, grid)
+        
+        # 2. 计算基础增益 (有多少个 UNKNOWN)
+        gain = 0
+        for (c, r) in visible_cells:
+            if 0<=c<GRID_W and 0<=r<GRID_H:
+                if grid[r, c] == UNKNOWN: # UNKNOWN
+                    gain += 1.5
+                elif grid[r, c] == DANGER:
+                    gain -= 2
+        
+        # 3. 协作惩罚
+        for (c, r) in visible_cells:
+            for peer_traj in peer_plans:
+                if self._is_covered_by_peers(c, r, peer_traj):
+                    gain -= 10 # 扣除收益
+                    break
+                    
+        return max(0, gain)
+
+    def _get_visible_cells(self, pos, grid):
+        """获取 pos 位置传感器覆盖的栅格坐标列表"""
+        # 简单圆形区域
+        cells = []
+        cx, cy = cell_of_pos(pos) # 转栅格坐标
+        r = int(self.sensor_range)
+        for i in range(-r, r+1):
+            for j in range(-r, r+1):
+                if i*i + j*j <= r*r:
+                    cells.append((cx+i, cy+j))
+        return cells
+
+    def _is_covered_by_peers(self, c, r, peer_traj):
+        """检查某个格子是否被队友的轨迹覆盖"""
+        # 简单实现：检查是否距离轨迹上的点小于传感器半径
+        # 为了性能，可以只检查轨迹的终点或几个关键点
+        for px, py in peer_traj[::5]: # 降采样加速
+            dist_sq = (c*GRID_CELL - px)**2 + (r*GRID_CELL - py)**2 # 假设 grid_size=20 转换坐标
+            if dist_sq < (self.sensor_range * GRID_CELL)**2:
+                return True
+        return False
+
+
+    def _find_frontier_centroids(self, grid, cell_of_mypos=None, cluster_radius_cells=2):
+            """
+            寻找前沿点并聚类求重心。
+            1. 找到所有前沿单元格 (UNKNOWN 邻近 FREE)。
+            2. 使用简单的贪婪聚类方法分组。
+            3. 返回聚类中心的世界坐标。
+            
+            Args:
+                grid (np.array): 机器人的已知全局地图。
+                cluster_radius_cells (int): 用于分组前沿点的聚类半径 (栅格单位)。
+                
+            Returns:
+                list: 世界坐标列表 [(x1, y1), (x2, y2), ...]
+            """
+            H, W = grid.shape
+            all_frontiers_cells = []
+            cx, cy = cell_of_mypos
+
+            # 1. 找到所有前沿单元格 (Grid Coordinates: c, r)
+            # 遍历时跳过地图边缘
+            for r in range(0, H):
+                for c in range(0, W):
+                    if 0<=r<H and 0<=c<W:
+                        # 必须是未知区域
+                        if grid[r, c] == UNKNOWN: 
+                            # 检查 8 邻域
+                            neighbors = grid[r-1:r+2, c-1:c+2].flatten()
+                            
+                            # 如果邻居中有 FREE 区域，则这是一个前沿点
+                            if np.any(neighbors == FREE):
+                                all_frontiers_cells.append((c, r)) # (col, row) 栅格坐标
+
+            if not all_frontiers_cells:
+                return []
+
+            # 2. 聚类和计算重心 (Simple Greedy Clustering)
+            
+            centroids_world_pos = all_frontiers_cells  
+
+            return centroids_world_pos
 
     def _is_safe_cell(self, world, cx, cy):
         if cx < 0 or cx >= GRID_W or cy < 0 or cy >= GRID_H:

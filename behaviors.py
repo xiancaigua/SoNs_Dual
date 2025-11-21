@@ -534,7 +534,7 @@ class BrainGlobalPlanner(Multi_Behavior):
         self.candidate_goals = []
         self.plan_interval = BRAIN_REASON_INTERVAL
         self.last_plan_time = 0.0
-        self.cluster_eps = SENSOR_LARGE * 0.4
+        self.cluster_eps = 10
 
     def generate_pseudo_random_goals(self, global_map, num_goals=20):
         """生成伪随机目标点（类似E-RRT的目标生成策略）"""
@@ -657,7 +657,8 @@ class BrainGlobalPlanner(Multi_Behavior):
         self.last_plan_time = now
 
         self.largents = large_agents
-        self.min_cluster_size = max(NUM_LARGE, len(large_agents))
+        self.min_cluster_size = 1
+        # self.min_cluster_size = max(NUM_LARGE, len(large_agents))
         global_map = brain_agent.known_map
         goals = self.compute_global_plan(global_map)
 
@@ -734,7 +735,7 @@ class BrainGlobalPlanner(Multi_Behavior):
             return []
 
         clusters = self.cluster_frontiers(frontiers)
-        selected_clusters = [self.cluster_centroid(c) for c in clusters if len(c) > self.min_cluster_size]
+        selected_clusters = [self.cluster_centroid(c) for c in clusters if len(c) >= self.min_cluster_size]
         selected_clusters.sort(reverse=True, key=lambda x: x[0])
         for cnt,centroid in enumerate(selected_clusters):
             if centroid is not None:
@@ -748,7 +749,7 @@ class BrainGlobalPlanner(Multi_Behavior):
         self.global_goals = final
         return self.global_goals
     
-    def find_frontiers(self, global_map, safe_margin=10):
+    def find_frontiers(self, global_map, safe_margin=2):
         """
         识别地图前沿区域（带安全检查）
         ---------------------------------------------------
@@ -849,14 +850,14 @@ class InformedLocalAssignmentBehavior(Multi_Behavior):
     """
 
     def __init__(self,
-                 sample_radius=40,
+                 sample_radius=100,
                  num_samples=50,
                  num_selected=12,
                  safe_margin=20,
                  sensor_range=6.0,
-                 w_gain=2.0,
-                 w_large_dist=0.5,
-                 w_goal_dist=0.1,
+                 w_gain=2000.0,
+                 w_large_dist=0.0,
+                 w_goal_dist=0.0,
                  retreat_ratio=0.85):
         self.sample_radius = sample_radius      # 采样半径
         self.num_samples = num_samples          # 采样候选数量
@@ -873,12 +874,12 @@ class InformedLocalAssignmentBehavior(Multi_Behavior):
     # 主接口
     # =====================================================
     def decide(self, large_agent, sub_agents):
-        if large_agent.goal is None:
+        if large_agent.task_seq is None:
             return {a.id: None for a in sub_agents}
 
         global_map = large_agent.known_map
         large_pos = np.array(large_agent.pos)
-        goal_pos = np.array(large_agent.goal)
+        goal_pos = np.array(large_agent.task_seq[0])
 
         # 1️⃣ 采样并计算信息增益
         sampled_points = self.sample_candidates(global_map, large_pos, goal_pos)
@@ -911,7 +912,7 @@ class InformedLocalAssignmentBehavior(Multi_Behavior):
         self.last_assignment = assignments
 
         # 4️⃣ 调整大节点自身目标（后移）
-        large_agent.goal = self.recede_large_goal(large_pos, goal_pos)
+        large_agent.task_seq = [self.recede_large_goal(large_pos, goal_pos)]
 
         return assignments
 
@@ -923,23 +924,15 @@ class InformedLocalAssignmentBehavior(Multi_Behavior):
         在大节点当前位置为圆心、指向目标方向的半圆区域采样
         """
         candidates = []
-        goal_dir = np.array(goal_pos) - np.array(large_pos)
-        if np.linalg.norm(goal_dir) < 1e-6:
-            return []  # 目标方向无效
-
-        goal_dir = goal_dir / np.linalg.norm(goal_dir)  # 单位化方向
 
         for _ in range(self.num_samples * 3):  # 适当放宽采样次数，以免半圆过滤太多
             ang = np.random.uniform(0, 2 * np.pi)
-            r = np.random.uniform(0.5 * self.sample_radius, self.sample_radius)
+            r = np.random.uniform(0.8 * self.sample_radius, self.sample_radius)
             dx = r * np.cos(ang)
             dy = r * np.sin(ang)
             candidate = np.array([int(goal_pos[0] + dx), int(goal_pos[1] + dy)])
             candidate_dir =  candidate - goal_pos
             candidate_dir = candidate_dir / np.linalg.norm(candidate_dir + 1e-6)
-            # ✅ 判断是否在“目标方向半圆”内：点积 > 0 表示锐角
-            if np.dot(candidate_dir, goal_dir) < 0:
-                continue
 
             # ✅ 转格子坐标
             i, j = cell_of_pos(candidate)
@@ -958,9 +951,10 @@ class InformedLocalAssignmentBehavior(Multi_Behavior):
     def is_point_safe(self, global_map, point):
         """检查该点附近是否安全"""
         x, y = point
-        region = global_map[max(0, y-2):min(global_map.shape[0], y+3),
-                            max(0, x-2):min(global_map.shape[1], x+3)]
-        if np.any(region == OBSTACLE) or np.any(region == DANGER):
+        # region = global_map[max(0, y-2):min(global_map.shape[0], y+3),
+        #                     max(0, x-2):min(global_map.shape[1], x+3)]
+        # if np.any(region == OBSTACLE) or np.any(region == DANGER):
+        if global_map[y,x] == OBSTACLE or global_map[y,x] == DANGER:
             return False
         return True
 
@@ -977,7 +971,6 @@ class InformedLocalAssignmentBehavior(Multi_Behavior):
 
             # 奖励靠近大节点，惩罚远离目标
             score = (self.w_gain * info_gain
-                     - self.w_large_dist * dist_large
                      - self.w_goal_dist * dist_goal)
             scored_points.append((score, pt))
 
@@ -1140,8 +1133,11 @@ class MCTSNode:
     def is_fully_expanded(self):
         return len(self.untried_actions) == 0
 
-    def best_child(self, c_param=1.414):
+    def best_child(self, c_param=2.0): # 增大 C 参数，鼓励探索更远的目标 (解决问题 2)
         """使用 UCT 公式选择最佳子节点"""
+        if not self.children:
+            return None
+        
         choices_weights = [
             (child.value / child.visits) + c_param * math.sqrt((2 * math.log(self.visits) / child.visits))
             for child in self.children
@@ -1157,69 +1153,75 @@ class DMCEExplorationBehavior(Multi_Behavior):
     3. 协作：在 Rollout 阶段扣除队友计划覆盖的区域增益。
     """
 
-    def __init__(self, simulation_budget=10, max_depth=3, rollout_depth=3):
-        super().__init__()
-        self.sensor_range = SENSOR_SMALL
-        self.simulation_budget = simulation_budget # MCTS 迭代次数
-        self.max_tree_depth = max_depth            # 树的最大深度
-        self.rollout_depth = rollout_depth         # Rollout 往下模拟几步
-        self.c_param = 1.414                       # 探索/利用平衡参数
-        
-        self.cached_frontiers = [] # 缓存前沿点以加速扩展
+    def __init__(self, simulation_budget=10, max_depth=3, rollout_depth=5, num_best_targets=4):
+            super().__init__()
+            self.sensor_range = SENSOR_SMALL
+            self.simulation_budget = simulation_budget  # MCTS 迭代次数 (影响速度)
+            self.max_tree_depth = max_depth             # 树的最大深度
+            self.rollout_depth = rollout_depth          # Rollout 往下模拟几步 (解决目标保守问题)
+            self.num_best_targets = num_best_targets    # 最终输出的最佳目标数量 (新增需求)
+            self.c_param = 12.0                          # 增大 UCT C 参数 (解决目标保守问题)
+            self.DISTANCE_PENALTY_WEIGHT = 0.01         # 距离惩罚权重 (解决规划失败和保守问题)
+            
+            self.cached_frontiers = []
 
     # =================================================
-    # 1. MCTS 主流程
+    # 1. MCTS 主流程 (decide)
     # =================================================
     def decide(self, agent, agents):
         """
-        主决策函数：
-        输入：当前agent，所有agent列表
-        输出：assignments {agent_id: target_pos}
+        主决策函数：MCTS 规划，并返回前 N 个最佳目标。
+        
+        输出: list of target_pos [(x1, y1), (x2, y2), ...]
         """
         grid = getattr(agent,"known_map",agent.local_map)
         my_pos = agent.pos
         cell_of_mypos = cell_of_pos(my_pos)
         
-        # 1. 识别全图前沿点 (作为 MCTS 的动作空间基础)
+        # 1. 识别全图前沿点
         self.cached_frontiers = self._find_frontier_centroids(grid, cell_of_mypos)
         
         if not self.cached_frontiers:
-            return {agent.id: None} # 无处可去，探索完成
+            # 探索完成
+            return [] 
 
-        # 2. 获取队友的计划 (用于去中心化协作)
-        # 假设 agents 列表里的对象有 planned_path 或 goal 属性
+        # 2. 获取队友的计划
         peer_plans = self._collect_peer_plans(agent, agents)
 
         # 3. 构建 MCTS 树
         root = MCTSNode(position=my_pos)
-        # 根节点的动作空间就是所有可选的前沿点
         root.untried_actions = self._get_feasible_actions(root.position, grid)
 
         for _ in range(self.simulation_budget):
             leaf = self._select(root)
-            
-            # 只有在树没达到最大深度时才扩展
             depth = self._get_depth(leaf)
+            
             if depth < self.max_tree_depth:
                 child = self._expand(leaf, grid)
                 if child:
-                    # 模拟 + 评估 (考虑协作)
                     reward = self._simulate(child, grid, peer_plans)
                     self._backpropagate(child, reward)
             else:
-                # 如果已达最大深度，直接评估当前节点
                 reward = self._evaluate_state(leaf.position, grid, peer_plans)
                 self._backpropagate(leaf, reward)
 
-        # 4. 选择最佳动作 (访问次数最多的子节点)
+        # 4. 选择最佳动作 (访问次数最多的前 N 个子节点)
         if not root.children:
             # 兜底：如果没有生成子节点，去最近的前沿点
-            return {agent.id: self._get_nearest_frontier(my_pos)}
+            return [self._get_nearest_frontier(my_pos)] if self.cached_frontiers else []
         
-        best_child = sorted(root.children, key=lambda c: c.visits)[-1]
-        best_target = best_child.action_to_reach
+        # 按访问次数排序 (Visits)，次数越多，代表 MCTS 认为该路径越有价值
+        # 也可以按平均价值 c.value / c.visits 排序，但 Visits 更能体现搜索的确定性。
+        sorted_children = sorted(root.children, key=lambda c: c.visits, reverse=True)
         
-        return {agent.id: best_target}
+        # 提取前 N 个目标的坐标
+        best_targets = [
+            child.action_to_reach 
+            for child in sorted_children[:self.num_best_targets]
+        ]
+        
+        # 返回目标点列表
+        return best_targets
 
     # =================================================
     # 2. MCTS 四大核心步骤
@@ -1233,36 +1235,43 @@ class DMCEExplorationBehavior(Multi_Behavior):
     def _expand(self, node, grid):
         """Expansion: 从未尝试的动作中选一个，生成新节点"""
         if not node.untried_actions:
-            return None # 无法扩展
+            return None
         
-        # 弹出一个动作 (这里动作就是下一个要去的目标点坐标)
         action_target = node.untried_actions.pop()
-        
-        # 创建子节点
         child_node = MCTSNode(position=action_target, parent=node, action_to_reach=action_target)
-        
-        # 为子节点生成它的动作空间 (从这个新位置出发能去哪)
-        # 关键：子节点的动作空间应该是相对于子节点位置的
-        child_node.untried_actions = self._get_feasible_actions(child_node.position, grid)
+        child_node.untried_actions = self._get_rollout_actions(child_node.position, grid)
         
         node.children.append(child_node)
         return child_node
 
     def _simulate(self, node, grid, peer_plans):
-        """Rollout: 随机游走若干步，计算累积奖励"""
+        """Rollout: 随机游走若干步，计算累积奖励 (修正：加入距离惩罚)"""
         current_pos = node.position
         accumulated_reward = self._evaluate_state(current_pos, grid, peer_plans)
         
-        # 简单模拟：随机选几个后续点
+        gamma = 0.95 # 提高折扣因子，鼓励远距离规划 (解决问题 2)
+        
         for _ in range(self.rollout_depth):
-            possible_moves = self._get_feasible_actions(current_pos, grid, max_count=5)
+            possible_moves = self._get_rollout_actions(current_pos, grid, max_count=5)
             if not possible_moves:
                 break
+            
+            # 1. 选择下一个动作
             next_pos = random.choice(possible_moves)
-            # 累加每一步的收益 (带折扣因子 gamma，论文公式 7)
-            gamma = 0.9
+            
+            # 2. 计算距离成本（欧式距离，假设是世界坐标）
+            dist = math.hypot(next_pos[0] - current_pos[0], next_pos[1] - current_pos[1]) 
+            
+            # 3. 计算收益 (信息增益)
             step_reward = self._evaluate_state(next_pos, grid, peer_plans)
-            accumulated_reward += step_reward * gamma
+            
+            # 4. 计算净奖励：(信息增益) - (距离惩罚)
+            # 引入距离惩罚解决规划失败和保守问题
+            net_reward = step_reward - (dist * self.DISTANCE_PENALTY_WEIGHT)
+            
+            # 5. 累加（带折扣因子）
+            # 仅在净收益为正时累加，或允许负值以惩罚高成本低收益路径
+            accumulated_reward += net_reward * gamma 
             current_pos = next_pos
             
         return accumulated_reward
@@ -1273,7 +1282,6 @@ class DMCEExplorationBehavior(Multi_Behavior):
             node.visits += 1
             node.value += reward
             node = node.parent
-
     # =================================================
     # 3. 辅助逻辑 (动作生成、收益评估、协作)
     # =================================================
@@ -1298,18 +1306,59 @@ class DMCEExplorationBehavior(Multi_Behavior):
         # 2. (可选) 加入局部随机点 (Local Exploitation)
         # 在 pos 周围随机采样几个 free point，模拟 RRT 的 extend
         for _ in range(3):
-            rand_x = int(pos[0] + random.uniform(-50, 50))
-            rand_y = int(pos[1] + random.uniform(-50, 50))
-            # 边界和碰撞检查略...
-            actions.append((rand_x, rand_y))
+            rand_x = int(pos[0] + random.uniform(-100, 100))
+            rand_y = int(pos[1] + random.uniform(-100, 100))
+            cell_of_randxy = cell_of_pos((rand_x,rand_y))
+            if 0<=cell_of_randxy[0]<GRID_W and 0<=cell_of_randxy[1]<GRID_H and grid[cell_of_randxy[1],cell_of_randxy[0]] == FREE:
+                actions.append((rand_x, rand_y))
             
         # 去重
         return list(set(actions))
 
+    def _get_rollout_actions(self, pos, grid, max_count=5):
+        """
+        Rollout专用动作：生成短距离、局部随机的动作。
+        这模拟了机器人接下来几步的连续、快速移动，而不是跳跃到远处的全局目标。
+        
+        Args:
+            pos (tuple): 当前世界坐标 (x, y)。
+            grid (np.array): 地图。
+            max_count (int): 返回的动作最大数量。
+        
+        Returns:
+            list: 短距离目标点的世界坐标列表。
+        """
+        actions = []
+        # 1. 局部随机采样 (模拟短距离行走)
+        for _ in range(max_count):
+            # 采样一个较小的局部区域，模拟几步行走。
+            # 假设步长不超过 10-20 个世界坐标单位
+            # 如果 GRID_CELL 很大，这个范围也要相应调整
+            rand_x = pos[0] + random.uniform(-100, 100) 
+            rand_y = pos[1] + random.uniform(-100, 100)
+            cell_of_randxy = cell_of_pos((rand_x,rand_y))
+            if 0<=cell_of_randxy[0]<GRID_W and 0<=cell_of_randxy[1]<GRID_H and grid[cell_of_randxy[1],cell_of_randxy[0]] == FREE:
+                actions.append((rand_x, rand_y))
+            # 理想情况下，这里应该检查 (rand_x, rand_y) 是否在自由空间内，
+            # 为了 Rollout 速度，可以跳过复杂的碰撞检测，只做边界检查。
+            
+            actions.append((rand_x, rand_y))
+            
+        # 2. (可选但推荐) 加入相邻的栅格中心点（模拟简单步进）
+        # c, r = cell_of_pos(pos)
+        # for dc in [-1, 0, 1]:
+        #     for dr in [-1, 0, 1]:
+        #         if dc != 0 or dr != 0:
+        #             try:
+        #                 actions.append(pos_of_cell(c + dc, r + dr))
+        #             except:
+        #                 pass
+
+        return list(set(actions))
+
     def _evaluate_state(self, pos, grid, peer_plans):
         """
-        计算收益 (Reward Function) - 对应论文 Eq. (2) 和 Eq. (6)
-        收益 = (该位置能看到的新未知区域) - (队友已经覆盖的区域)
+        计算收益 (Reward Function)。
         """
         # 1. 模拟传感器视野
         visible_cells = self._get_visible_cells(pos, grid)
@@ -1323,30 +1372,34 @@ class DMCEExplorationBehavior(Multi_Behavior):
                 elif grid[r, c] == DANGER:
                     gain -= 2
         
-        
-        # 3. 协作惩罚：检查这些格子是否在队友的计划范围内
-        # 如果队友计划去附近，假设他们会把那里探开，所以我们要减去这部分收益
+        # 3. 协作惩罚
         for (c, r) in visible_cells:
             for peer_traj in peer_plans:
-                # 简单判断：如果格子离队友轨迹上的点很近，就认为被覆盖了
-                # 这里为了效率，简化为：检查格子是否被队友"预定"
-                # 论文中使用 Multi-robot Rollout，这里简化为静态惩罚
                 if self._is_covered_by_peers(c, r, peer_traj):
-                    gain -= 1 # 扣除收益
+                    gain -= 10 # 扣除收益
                     break
                     
         return max(0, gain)
 
     def _collect_peer_plans(self, my_agent, all_agents):
-        """收集其他机器人的未来计划 (轨迹点列表)"""
+        """
+        收集其他**大机器人**的未来计划 (轨迹点列表)。
+        注意：这里的 all_agents 应该是所有大型探索机器人。
+        """
         plans = []
-        for a in all_agents:
+        # 遍历所有大机器人，收集它们的计划。
+        for a in all_agents: 
             if a.id != my_agent.id and a.alive:
-                # 假设 agent 对象有 planned_path 属性 (A* 结果)
+                # 假设 large agent 有 planned_path 属性 (指向它的目标点)
+                # 或者 a.task_seq 存储了它当前的下一个目标点
                 if hasattr(a, 'planned_path') and a.planned_path:
                     plans.append(a.planned_path)
-                elif hasattr(a, 'goal') and a.goal:
-                    plans.append([a.goal]) # 如果只有目标，就只存目标
+                elif hasattr(a, 'task_seq') and a.task_seq:
+                    # 假设 task_seq 列表的第一个元素是下一个目标点
+                    plans.append([a.task_seq[0]]) 
+                elif hasattr(a, 'target_list') and a.target_list:
+                    # 收集其分配给小机器人的所有目标点，这些都应该被避让
+                    plans.extend(a.target_list)
         return plans
 
     def _is_covered_by_peers(self, c, r, peer_traj):
@@ -1359,7 +1412,7 @@ class DMCEExplorationBehavior(Multi_Behavior):
                 return True
         return False
 
-    def _find_frontier_centroids(self, grid, cell_of_mypos=None, cluster_radius_cells=5):
+    def _find_frontier_centroids(self, grid, cell_of_mypos=None, cluster_radius_cells=2):
             """
             寻找前沿点并聚类求重心。
             1. 找到所有前沿单元格 (UNKNOWN 邻近 FREE)。
@@ -1379,8 +1432,8 @@ class DMCEExplorationBehavior(Multi_Behavior):
 
             # 1. 找到所有前沿单元格 (Grid Coordinates: c, r)
             # 遍历时跳过地图边缘
-            for r in range(cy-5, cy+6):
-                for c in range(cx-5, cx+6):
+            for r in range(cy-15, cy+16):
+                for c in range(cx-15, cx+16):
                     if 0<=r<H and 0<=c<W:
                         # 必须是未知区域
                         if grid[r, c] == UNKNOWN: 
@@ -1396,50 +1449,7 @@ class DMCEExplorationBehavior(Multi_Behavior):
 
             # 2. 聚类和计算重心 (Simple Greedy Clustering)
             
-            unassigned_frontiers = set(all_frontiers_cells)
-            centroids_world_pos = [] 
-
-            while unassigned_frontiers:
-                # 2.1. 选取第一个未分配的点作为当前簇的起点
-                start_cell = unassigned_frontiers.pop()
-                
-                cluster_sum_c, cluster_sum_r = start_cell
-                cluster_count = 1
-                
-                to_remove = [] 
-                
-                # 2.2. 找到所有与起始点足够接近的点，并将其加入簇中
-                # 转化为列表迭代，效率较低但实现简单
-                temp_unassigned = list(unassigned_frontiers) 
-                for next_cell in temp_unassigned:
-                    # 使用平方距离避免开方运算
-                    dist_sq = (next_cell[0] - start_cell[0])**2 + (next_cell[1] - start_cell[1])**2
-                    
-                    if dist_sq <= cluster_radius_cells**2:
-                        to_remove.append(next_cell)
-                        cluster_sum_c += next_cell[0]
-                        cluster_sum_r += next_cell[1]
-                        cluster_count += 1
-                
-                # 从未分配集合中移除已分组的点
-                for cell in to_remove:
-                    unassigned_frontiers.remove(cell)
-                    
-                # 2.3. 计算重心（平均值）
-                centroid_c = cluster_sum_c / cluster_count
-                centroid_r = cluster_sum_r / cluster_count
-                
-                # 3. 转换并存储（四舍五入到最近的栅格，然后转换为世界坐标）
-                final_centroid_c = int(round(centroid_c))
-                final_centroid_r = int(round(centroid_r))
-                
-                try:
-                    # 假设 pos_of_cell(col, row) → (x_world, y_world)
-                    gx, gy = pos_of_cell(final_centroid_c, final_centroid_r)
-                    centroids_world_pos.append((gx, gy))
-                except NameError:
-                    # 如果 pos_of_cell 不可用，返回栅格坐标（应急处理）
-                    centroids_world_pos.append((final_centroid_c, final_centroid_r)) 
+            centroids_world_pos = all_frontiers_cells  
 
             return centroids_world_pos
 

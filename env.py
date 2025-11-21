@@ -539,7 +539,7 @@ class World:
                 alive_agents.append(a)
                 
         self.agents = alive_agents
-        print(len(self.wasted_agents))
+        # print(len(self.wasted_agents))
         # 1. 创建当前所有存活 Small Agent 的 ID 集合，用于快速查找
         alive_small_agent_ids = {a.id for a in self.agents}
 
@@ -588,24 +588,22 @@ class World:
                     if a.father_id == la.id:
                         la.known_map = np.maximum(la.known_map, a.local_map)
                         self.known_grid = np.maximum(self.known_grid, la.known_map)
+                        self.local_map = self.known_grid
         self.brain.known_map = self.known_grid
 
         for la in self.large_agents:
-            if not la.alive:
-                continue
-            sons_list = [a for a in self.agents if a.father_id == la.id]
-            if now_time - la.last_reason_time > 5:
-                if la.id == 0:
-                    la.MCTS_reason(sons_list)
-                    la.last_reason_time = now_time
-                # for son in sons_list:
-                #     comrades = sons_list.copy()
-                #     comrades[sons_list.index(son)] = la
-                #     son.MCTS_reason(comrades)
-            if la.death_queue:
-                self.spawn_reinforcement_agent(la.id)
-                la.recognize_danger_area(self)
-                death_info = la.death_queue.pop(0)
+            if now_time - la.last_reason_time > BRAIN_REASON_INTERVAL:
+                sons_list = [a for a in self.agents if a.father_id == la.id]
+                assignments = la.find_nbv_targets_for_assignment(self.large_agents,len(sons_list))
+                la.last_reason_time = now_time
+                la.assign_targets(assignments, sons_list)
+
+                if la.death_queue:
+                    self.spawn_reinforcement_agent(la.id)
+                    # la.recognize_danger_area(self)
+                    death_info = la.death_queue.pop(0)
+                    pos = death_info['dead_pos']
+                    la.known_map[pos[1],pos[1]] = DANGER
 
         # 5. 所有 agent 执行 step_motion（跟踪各自的 planned_path）
         for a in self.agents + self.large_agents:
@@ -668,7 +666,7 @@ class World:
                 alive_agents.append(a)
                 
         self.agents = alive_agents
-        print(len(self.wasted_agents))
+        # print(len(self.wasted_agents))
         # 1. 创建当前所有存活 Small Agent 的 ID 集合，用于快速查找
         alive_small_agent_ids = {a.id for a in self.agents}
 
@@ -834,7 +832,8 @@ class World:
                         safe_pos = sa.hist[-2] 
                         father.death_queue.append({
                             'child_id': sa.id,
-                            'loc': safe_pos # 这个pos是世界坐标
+                            'loc': safe_pos, # 这个pos是世界坐标
+                            'dead_pos': fatal_pos
                         })
                         # 标记致死的危险区域点到父节点地图 (可选)
                         cx, cy = fatal_pos
