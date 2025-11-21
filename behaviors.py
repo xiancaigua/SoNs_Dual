@@ -1007,9 +1007,6 @@ class InformedLocalAssignmentBehavior(Multi_Behavior):
         new_gy = large_pos[1] + dy * self.retreat_ratio
         return (new_gx, new_gy)
 
-
-
-
 class FormationAssignmentBehavior(Multi_Behavior):
     """
     编队式局部任务分配行为
@@ -1128,9 +1125,342 @@ class FormationAssignmentBehavior(Multi_Behavior):
         new_gy = large_pos[1] + dy * self.retreat_ratio
         return (new_gx, new_gy)
 
+class MCTSNode:
+    """MCTS 树节点"""
+    def __init__(self, position, parent=None, action_to_reach=None):
+        self.position = position  # 节点代表的机器人位置 (x, y)
+        self.parent = parent
+        self.action_to_reach = action_to_reach  # 到达此节点的动作（目标点）
+        
+        self.children = []
+        self.visits = 0
+        self.value = 0.0  # 累积奖励
+        self.untried_actions = [] # 尚未扩展的动作
 
+    def is_fully_expanded(self):
+        return len(self.untried_actions) == 0
 
+    def best_child(self, c_param=1.414):
+        """使用 UCT 公式选择最佳子节点"""
+        choices_weights = [
+            (child.value / child.visits) + c_param * math.sqrt((2 * math.log(self.visits) / child.visits))
+            for child in self.children
+        ]
+        return self.children[np.argmax(choices_weights)]
 
+class DMCEExplorationBehavior(Multi_Behavior):
+    """
+    基于 DMCE (Decentralized Monte Carlo Exploration) 论文思想的栅格化实现。
+    核心特性：
+    1. 使用 MCTS 进行多步路径规划。
+    2. 动作空间：前沿点聚类中心 + 局部随机采样。
+    3. 协作：在 Rollout 阶段扣除队友计划覆盖的区域增益。
+    """
+
+    def __init__(self, sensor_range=6.0, simulation_budget=50, max_depth=5, rollout_depth=3):
+        super().__init__()
+        self.sensor_range = SENSOR_SMALL
+        self.simulation_budget = simulation_budget # MCTS 迭代次数
+        self.max_tree_depth = max_depth            # 树的最大深度
+        self.rollout_depth = rollout_depth         # Rollout 往下模拟几步
+        self.c_param = 1.414                       # 探索/利用平衡参数
+        
+        self.cached_frontiers = [] # 缓存前沿点以加速扩展
+
+    # =================================================
+    # 1. MCTS 主流程
+    # =================================================
+    def decide(self, agent, agents):
+        """
+        主决策函数：
+        输入：当前agent，所有agent列表
+        输出：assignments {agent_id: target_pos}
+        """
+        grid = agent.known_map
+        my_pos = agent.pos
+        
+        # 1. 识别全图前沿点 (作为 MCTS 的动作空间基础)
+        self.cached_frontiers = self._find_frontier_centroids(grid)
+        
+        if not self.cached_frontiers:
+            return {agent.id: None} # 无处可去，探索完成
+
+        # 2. 获取队友的计划 (用于去中心化协作)
+        # 假设 agents 列表里的对象有 planned_path 或 goal 属性
+        peer_plans = self._collect_peer_plans(agent, agents)
+
+        # 3. 构建 MCTS 树
+        root = MCTSNode(position=my_pos)
+        # 根节点的动作空间就是所有可选的前沿点
+        root.untried_actions = self._get_feasible_actions(root.position, grid)
+
+        for _ in range(self.simulation_budget):
+            leaf = self._select(root)
+            
+            # 只有在树没达到最大深度时才扩展
+            depth = self._get_depth(leaf)
+            if depth < self.max_tree_depth:
+                child = self._expand(leaf, grid)
+                if child:
+                    # 模拟 + 评估 (考虑协作)
+                    reward = self._simulate(child, grid, peer_plans)
+                    self._backpropagate(child, reward)
+            else:
+                # 如果已达最大深度，直接评估当前节点
+                reward = self._evaluate_state(leaf.position, grid, peer_plans)
+                self._backpropagate(leaf, reward)
+
+        # 4. 选择最佳动作 (访问次数最多的子节点)
+        if not root.children:
+            # 兜底：如果没有生成子节点，去最近的前沿点
+            return {agent.id: self._get_nearest_frontier(my_pos)}
+        
+        best_child = sorted(root.children, key=lambda c: c.visits)[-1]
+        best_target = best_child.action_to_reach
+        
+        return {agent.id: best_target}
+
+    # =================================================
+    # 2. MCTS 四大核心步骤
+    # =================================================
+    def _select(self, node:MCTSNode):
+        """Selection: 递归选择 UCT 最大的节点，直到遇到未完全扩展的节点"""
+        while not node.untried_actions and node.children:
+            node = node.best_child(self.c_param)
+        return node
+
+    def _expand(self, node, grid):
+        """Expansion: 从未尝试的动作中选一个，生成新节点"""
+        if not node.untried_actions:
+            return None # 无法扩展
+        
+        # 弹出一个动作 (这里动作就是下一个要去的目标点坐标)
+        action_target = node.untried_actions.pop()
+        
+        # 创建子节点
+        child_node = MCTSNode(position=action_target, parent=node, action_to_reach=action_target)
+        
+        # 为子节点生成它的动作空间 (从这个新位置出发能去哪)
+        # 关键：子节点的动作空间应该是相对于子节点位置的
+        child_node.untried_actions = self._get_feasible_actions(child_node.position, grid)
+        
+        node.children.append(child_node)
+        return child_node
+
+    def _simulate(self, node, grid, peer_plans):
+        """Rollout: 随机游走若干步，计算累积奖励"""
+        current_pos = node.position
+        accumulated_reward = self._evaluate_state(current_pos, grid, peer_plans)
+        
+        # 简单模拟：随机选几个后续点
+        for _ in range(self.rollout_depth):
+            possible_moves = self._get_feasible_actions(current_pos, grid, max_count=5)
+            if not possible_moves:
+                break
+            next_pos = random.choice(possible_moves)
+            # 累加每一步的收益 (带折扣因子 gamma，论文公式 7)
+            gamma = 0.9
+            step_reward = self._evaluate_state(next_pos, grid, peer_plans)
+            accumulated_reward += step_reward * gamma
+            current_pos = next_pos
+            
+        return accumulated_reward
+
+    def _backpropagate(self, node, reward):
+        """Backpropagation: 沿树向上传递奖励"""
+        while node is not None:
+            node.visits += 1
+            node.value += reward
+            node = node.parent
+
+    # =================================================
+    # 3. 辅助逻辑 (动作生成、收益评估、协作)
+    # =================================================
+    
+    def _get_feasible_actions(self, pos, grid, max_count=10):
+        """
+        生成可行动作集。
+        策略：优先选择前沿聚类中心，其次是附近的空闲点。
+        """
+        actions = []
+        
+        # 1. 加入全局前沿点 (Global Exploration)
+        # 为了防止动作空间过大，只取距离当前 pos 最近的 N 个前沿点
+        if self.cached_frontiers:
+            # 按距离排序
+            sorted_frontiers = sorted(
+                self.cached_frontiers, 
+                key=lambda p: (p[0]-pos[0])**2 + (p[1]-pos[1])**2
+            )
+            actions.extend(sorted_frontiers[:max_count])
+            
+        # 2. (可选) 加入局部随机点 (Local Exploitation)
+        # 在 pos 周围随机采样几个 free point，模拟 RRT 的 extend
+        for _ in range(3):
+            rand_x = int(pos[0] + random.uniform(-50, 50))
+            rand_y = int(pos[1] + random.uniform(-50, 50))
+            # 边界和碰撞检查略...
+            actions.append((rand_x, rand_y))
+            
+        # 去重
+        return list(set(actions))
+
+    def _evaluate_state(self, pos, grid, peer_plans):
+        """
+        计算收益 (Reward Function) - 对应论文 Eq. (2) 和 Eq. (6)
+        收益 = (该位置能看到的新未知区域) - (队友已经覆盖的区域)
+        """
+        # 1. 模拟传感器视野
+        visible_cells = self._get_visible_cells(pos, grid)
+        
+        # 2. 计算基础增益 (有多少个 UNKNOWN)
+        gain = 0
+        for (c, r) in visible_cells:
+            if grid[r, c] == UNKNOWN: # UNKNOWN
+                gain += 1.5
+            elif grid[r, c] == DANGER:
+                gain -= 2
+        
+        
+        # 3. 协作惩罚：检查这些格子是否在队友的计划范围内
+        # 如果队友计划去附近，假设他们会把那里探开，所以我们要减去这部分收益
+        for (c, r) in visible_cells:
+            for peer_traj in peer_plans:
+                # 简单判断：如果格子离队友轨迹上的点很近，就认为被覆盖了
+                # 这里为了效率，简化为：检查格子是否被队友"预定"
+                # 论文中使用 Multi-robot Rollout，这里简化为静态惩罚
+                if self._is_covered_by_peers(c, r, peer_traj):
+                    gain -= 1 # 扣除收益
+                    break
+                    
+        return max(0, gain)
+
+    def _collect_peer_plans(self, my_agent, all_agents):
+        """收集其他机器人的未来计划 (轨迹点列表)"""
+        plans = []
+        for a in all_agents:
+            if a.id != my_agent.id and a.alive:
+                # 假设 agent 对象有 planned_path 属性 (A* 结果)
+                if hasattr(a, 'planned_path') and a.planned_path:
+                    plans.append(a.planned_path)
+                elif hasattr(a, 'goal') and a.goal:
+                    plans.append([a.goal]) # 如果只有目标，就只存目标
+        return plans
+
+    def _is_covered_by_peers(self, c, r, peer_traj):
+        """检查某个格子是否被队友的轨迹覆盖"""
+        # 简单实现：检查是否距离轨迹上的点小于传感器半径
+        # 为了性能，可以只检查轨迹的终点或几个关键点
+        for px, py in peer_traj[::5]: # 降采样加速
+            dist_sq = (c*GRID_CELL - px)**2 + (r*GRID_CELL - py)**2 # 假设 grid_size=20 转换坐标
+            if dist_sq < (self.sensor_range * GRID_CELL)**2:
+                return True
+        return False
+
+    def _find_frontier_centroids(self, grid, cluster_radius_cells=5):
+            """
+            寻找前沿点并聚类求重心。
+            1. 找到所有前沿单元格 (UNKNOWN 邻近 FREE)。
+            2. 使用简单的贪婪聚类方法分组。
+            3. 返回聚类中心的世界坐标。
+            
+            Args:
+                grid (np.array): 机器人的已知全局地图。
+                cluster_radius_cells (int): 用于分组前沿点的聚类半径 (栅格单位)。
+                
+            Returns:
+                list: 世界坐标列表 [(x1, y1), (x2, y2), ...]
+            """
+            H, W = grid.shape
+            all_frontiers_cells = []
+
+            # 1. 找到所有前沿单元格 (Grid Coordinates: c, r)
+            # 遍历时跳过地图边缘
+            for r in range(1, H - 1):
+                for c in range(1, W - 1):
+                    # 必须是未知区域
+                    if grid[r, c] == UNKNOWN: 
+                        # 检查 8 邻域
+                        neighbors = grid[r-1:r+2, c-1:c+2].flatten()
+                        
+                        # 如果邻居中有 FREE 区域，则这是一个前沿点
+                        if np.any(neighbors == FREE):
+                            all_frontiers_cells.append((c, r)) # (col, row) 栅格坐标
+
+            if not all_frontiers_cells:
+                return []
+
+            # 2. 聚类和计算重心 (Simple Greedy Clustering)
+            
+            unassigned_frontiers = set(all_frontiers_cells)
+            centroids_world_pos = [] 
+
+            while unassigned_frontiers:
+                # 2.1. 选取第一个未分配的点作为当前簇的起点
+                start_cell = unassigned_frontiers.pop()
+                
+                cluster_sum_c, cluster_sum_r = start_cell
+                cluster_count = 1
+                
+                to_remove = [] 
+                
+                # 2.2. 找到所有与起始点足够接近的点，并将其加入簇中
+                # 转化为列表迭代，效率较低但实现简单
+                temp_unassigned = list(unassigned_frontiers) 
+                for next_cell in temp_unassigned:
+                    # 使用平方距离避免开方运算
+                    dist_sq = (next_cell[0] - start_cell[0])**2 + (next_cell[1] - start_cell[1])**2
+                    
+                    if dist_sq <= cluster_radius_cells**2:
+                        to_remove.append(next_cell)
+                        cluster_sum_c += next_cell[0]
+                        cluster_sum_r += next_cell[1]
+                        cluster_count += 1
+                
+                # 从未分配集合中移除已分组的点
+                for cell in to_remove:
+                    unassigned_frontiers.remove(cell)
+                    
+                # 2.3. 计算重心（平均值）
+                centroid_c = cluster_sum_c / cluster_count
+                centroid_r = cluster_sum_r / cluster_count
+                
+                # 3. 转换并存储（四舍五入到最近的栅格，然后转换为世界坐标）
+                final_centroid_c = int(round(centroid_c))
+                final_centroid_r = int(round(centroid_r))
+                
+                try:
+                    # 假设 pos_of_cell(col, row) → (x_world, y_world)
+                    gx, gy = pos_of_cell(final_centroid_c, final_centroid_r)
+                    centroids_world_pos.append((gx, gy))
+                except NameError:
+                    # 如果 pos_of_cell 不可用，返回栅格坐标（应急处理）
+                    centroids_world_pos.append((final_centroid_c, final_centroid_r)) 
+
+            return centroids_world_pos
+
+    def _get_visible_cells(self, pos, grid):
+        """获取 pos 位置传感器覆盖的栅格坐标列表"""
+        # 简单圆形区域
+        cells = []
+        cx, cy = cell_of_pos(pos) # 转栅格坐标
+        r = int(self.sensor_range)
+        for i in range(-r, r+1):
+            for j in range(-r, r+1):
+                if i*i + j*j <= r*r:
+                    cells.append((cx+i, cy+j))
+        return cells
+
+    def _get_depth(self, node):
+        d = 0
+        while node.parent:
+            node = node.parent
+            d += 1
+        return d
+    
+    def _get_nearest_frontier(self, pos):
+        if not self.cached_frontiers: return None
+        return min(self.cached_frontiers, key=lambda p: (p[0]-pos[0])**2 + (p[1]-pos[1])**2)
 
 
 

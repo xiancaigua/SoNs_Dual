@@ -44,7 +44,7 @@ class AgentBase:
         if behavior is not None:
             self.behavior = behavior
         else:
-            self.behavior = PathPlanningBehavior()
+            self.behavior = DMCEExplorationBehavior()
 
     # =====================================================
     # 感知函数：不再能直接探测到危险区
@@ -496,6 +496,11 @@ class LargeAgent(AgentBase):
         if len(children) == 0:
             return None
         return self.multi_behavior.decide(self,children)
+
+    def MCTS_reason(self, agents):
+        if len(agents) == 0:
+            return None
+        return self.behavior.decide(self, agents)
 
     def integrate_map_patch(self, patch):
         """将收到的patch应用到自己的known_map"""

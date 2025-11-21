@@ -9,8 +9,8 @@ import re
 # 📌 配置区
 # =======================================================
 # 实验文件所在的目录 (假设和脚本在同一目录下)
-DATA_DIRECTORY = "myresult1\simulation_results" 
-TOTAL_EXPERIMENTS = 500
+DATA_DIRECTORY = "base1\simulation_results" 
+TOTAL_EXPERIMENTS = 600
 EXPERIMENTS_PER_SCENE = 100
 SCENE_COUNT = TOTAL_EXPERIMENTS // EXPERIMENTS_PER_SCENE
 
