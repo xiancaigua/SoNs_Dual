@@ -1157,7 +1157,7 @@ class DMCEExplorationBehavior(Multi_Behavior):
     3. 协作：在 Rollout 阶段扣除队友计划覆盖的区域增益。
     """
 
-    def __init__(self, sensor_range=6.0, simulation_budget=50, max_depth=5, rollout_depth=3):
+    def __init__(self, simulation_budget=10, max_depth=3, rollout_depth=3):
         super().__init__()
         self.sensor_range = SENSOR_SMALL
         self.simulation_budget = simulation_budget # MCTS 迭代次数
@@ -1176,11 +1176,12 @@ class DMCEExplorationBehavior(Multi_Behavior):
         输入：当前agent，所有agent列表
         输出：assignments {agent_id: target_pos}
         """
-        grid = agent.known_map
+        grid = getattr(agent,"known_map",agent.local_map)
         my_pos = agent.pos
+        cell_of_mypos = cell_of_pos(my_pos)
         
         # 1. 识别全图前沿点 (作为 MCTS 的动作空间基础)
-        self.cached_frontiers = self._find_frontier_centroids(grid)
+        self.cached_frontiers = self._find_frontier_centroids(grid, cell_of_mypos)
         
         if not self.cached_frontiers:
             return {agent.id: None} # 无处可去，探索完成
@@ -1316,10 +1317,11 @@ class DMCEExplorationBehavior(Multi_Behavior):
         # 2. 计算基础增益 (有多少个 UNKNOWN)
         gain = 0
         for (c, r) in visible_cells:
-            if grid[r, c] == UNKNOWN: # UNKNOWN
-                gain += 1.5
-            elif grid[r, c] == DANGER:
-                gain -= 2
+            if 0<=c<GRID_W and 0<=r<GRID_H:
+                if grid[r, c] == UNKNOWN: # UNKNOWN
+                    gain += 1.5
+                elif grid[r, c] == DANGER:
+                    gain -= 2
         
         
         # 3. 协作惩罚：检查这些格子是否在队友的计划范围内
@@ -1357,7 +1359,7 @@ class DMCEExplorationBehavior(Multi_Behavior):
                 return True
         return False
 
-    def _find_frontier_centroids(self, grid, cluster_radius_cells=5):
+    def _find_frontier_centroids(self, grid, cell_of_mypos=None, cluster_radius_cells=5):
             """
             寻找前沿点并聚类求重心。
             1. 找到所有前沿单元格 (UNKNOWN 邻近 FREE)。
@@ -1373,19 +1375,21 @@ class DMCEExplorationBehavior(Multi_Behavior):
             """
             H, W = grid.shape
             all_frontiers_cells = []
+            cx, cy = cell_of_mypos
 
             # 1. 找到所有前沿单元格 (Grid Coordinates: c, r)
             # 遍历时跳过地图边缘
-            for r in range(1, H - 1):
-                for c in range(1, W - 1):
-                    # 必须是未知区域
-                    if grid[r, c] == UNKNOWN: 
-                        # 检查 8 邻域
-                        neighbors = grid[r-1:r+2, c-1:c+2].flatten()
-                        
-                        # 如果邻居中有 FREE 区域，则这是一个前沿点
-                        if np.any(neighbors == FREE):
-                            all_frontiers_cells.append((c, r)) # (col, row) 栅格坐标
+            for r in range(cy-5, cy+6):
+                for c in range(cx-5, cx+6):
+                    if 0<=r<H and 0<=c<W:
+                        # 必须是未知区域
+                        if grid[r, c] == UNKNOWN: 
+                            # 检查 8 邻域
+                            neighbors = grid[r-1:r+2, c-1:c+2].flatten()
+                            
+                            # 如果邻居中有 FREE 区域，则这是一个前沿点
+                            if np.any(neighbors == FREE):
+                                all_frontiers_cells.append((c, r)) # (col, row) 栅格坐标
 
             if not all_frontiers_cells:
                 return []

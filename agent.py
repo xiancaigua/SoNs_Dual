@@ -105,6 +105,11 @@ class AgentBase:
         inds = np.where(self.local_map != UNKNOWN)
         return set(zip(inds[0].tolist(), inds[1].tolist()))
 
+    def MCTS_reason(self, agents):
+        plan = self.behavior.decide(self,agents)
+        self.task_seq = [plan[self.id]]
+        self.plan_path_sequence()
+
     def plan_path_sequence(self, unknown_cost=5.0, danger_proximity_penalty=4.0, proximity_radius=2):
         """
         为接收到的 task_seq（[(x,y), ...] 世界坐标点序列）规划一条安全且尽量快速的栅格路径序列。
@@ -254,6 +259,8 @@ class AgentBase:
         planned_cells = []
         cur_pos = self.pos
         cur_c, cur_r = cell_of_pos(cur_pos)
+        if not self.task_seq or len(self.task_seq)==0 or not self.task_seq[0]:
+            return
         way_rc = [cell_of_pos((t[1],t[0])) for t in self.task_seq]
         # 使用 multi-goal A* 替换原来逐段 A*
         planned_cells = astar_multi((cur_r, cur_c), way_rc)
@@ -283,12 +290,10 @@ class AgentBase:
             frontiers.sort(key=lambda rc: math.hypot(rc[0]-cur_r, rc[1]-cur_c))
 
             selected_path = None
-            for fr, fc in frontiers:
-                # 原来的 astar 保留，但这里 multi-goal 不适用
-                path_rc = astar_multi((cur_r, cur_c), [(fr, fc)])  # ★ MODIFIED: 用 multi 兼容单目标
-                if path_rc is not None:
-                    selected_path = path_rc
-                    break
+            # 原来的 astar 保留，但这里 multi-goal 不适用
+            path_rc = astar_multi((cur_r, cur_c), [frontiers[0]])  # ★ MODIFIED: 用 multi 兼容单目标
+            if path_rc is not None:
+                selected_path = path_rc
             planned_cells = selected_path
 
         # -------------------
@@ -496,11 +501,6 @@ class LargeAgent(AgentBase):
         if len(children) == 0:
             return None
         return self.multi_behavior.decide(self,children)
-
-    def MCTS_reason(self, agents):
-        if len(agents) == 0:
-            return None
-        return self.behavior.decide(self, agents)
 
     def integrate_map_patch(self, patch):
         """将收到的patch应用到自己的known_map"""

@@ -37,8 +37,8 @@ def main(rounds=1):
     # world = World.load_state(save_filename)
     world = World(seed=world_seeds[rounds//100])
     # world.save_state(f"world_seed_{SEED}_init_state.pkl")
-    if BASELINE:
-        world.set_state()
+    # if BASELINE:
+    #     world.set_state()
 
     running = True
     paused = False
@@ -68,7 +68,8 @@ def main(rounds=1):
                         save_simulation_screenshot(screen, world, sim_time, "manual")
         if not paused:
             if BASELINE:
-                world.update_baseline(dt, comms, now_time)
+                world.update_base2(dt, comms, now_time)
+                # world.update_baseline(dt, comms, now_time)
             else:
                 world.update(dt, comms, now_time)
 

@@ -102,11 +102,11 @@ class World:
         self.brain = BrainAgent(-1, self.spawn_center[0],self.spawn_center[1])
         self.spawn_agents(NUM_LARGE)
         self.place_victim()   # victim放在最后，以确保存在brain node
-    def set_state(self):
-        for la in self.large_agents:
-            la.multi_behavior = ERRTFrontierAssignmentBehavior()
-        for a in self.agents:
-            a.behavior = PathPlanningBehavior()
+    # def set_state(self):
+    #     for la in self.large_agents:
+    #         la.multi_behavior = ERRTFrontierAssignmentBehavior()
+    #     for a in self.agents:
+    #         a.behavior = PathPlanningBehavior()
     # ========== 环境生成 ==========
     def generate_static_obstacles(self, n=NUM_OBSTACLES):
 
@@ -594,17 +594,14 @@ class World:
             if not la.alive:
                 continue
             sons_list = [a for a in self.agents if a.father_id == la.id]
-            if now_time - la.last_reason_time > BRAIN_REASON_INTERVAL:
-                assignments = la.large_reason(sons_list)
-                # for id, target in assignments.item():
-                for son in sons_list:
-                    assign = assignments[son.id]
-                    son.task_seq = [assign]
-                    son.has_goal = True
-                    if son.task_seq:
-                        son.plan_path_sequence()
-                la.last_reason_time = now_time
-            la.nav_to_centroid(sons_list)
+            if now_time - la.last_reason_time > 5:
+                if la.id == 0:
+                    la.MCTS_reason(sons_list)
+                    la.last_reason_time = now_time
+                # for son in sons_list:
+                #     comrades = sons_list.copy()
+                #     comrades[sons_list.index(son)] = la
+                #     son.MCTS_reason(comrades)
             if la.death_queue:
                 self.spawn_reinforcement_agent(la.id)
                 la.recognize_danger_area(self)
