@@ -1,0 +1,14 @@
+{
+    "global_avg_simulation_duration": 52.73312166666765,
+    "global_std_simulation_duration": 8.316126370705032,
+    "global_avg_success_rate": 0.37166666666666665,
+    "global_std_success_rate": 0.48324999281485315,
+    "global_avg_dead_agents": 35.10333333333333,
+    "global_std_dead_agents": 9.52344417156361,
+    "global_avg_coverage_percentage": 71.31030952380954,
+    "global_std_coverage_percentage": 17.889687016179128,
+    "global_avg_total_trajectory_length": 1942.8616666666667,
+    "global_std_total_trajectory_length": 405.7747846575596,
+    "global_avg_total_energy_cost": 2455.5811028893904,
+    "global_std_total_energy_cost": 529.4595867543565
+}

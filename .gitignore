@@ -1,7 +1,5 @@
-*.json
-*.png
-*.pyc
-/base1json
-/base1picture
+# *.json
+# *.png
+# *.pyc
 /__pycache__
 tiaoshi
