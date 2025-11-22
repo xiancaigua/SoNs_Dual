@@ -591,7 +591,7 @@ class World:
                         self.local_map = self.known_grid
         self.brain.known_map = self.known_grid
 
-        if now_time - self.brain.last_reason_time > BRAIN_REASON_INTERVAL:
+        if now_time - self.brain.last_reason_time > 1.0:
             assignments = self.brain.find_nbv_targets_for_assignment(self.large_agents, len(self.large_agents+self.agents))
             self.brain.last_reason_time = now_time
             for la in self.large_agents + self.agents:
