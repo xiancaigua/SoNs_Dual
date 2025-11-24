@@ -1,0 +1,260 @@
+{
+    "Ours": {
+        "1": {
+            "simulation_duration": {
+                "mean": 29.688990000000075,
+                "std": 6.786481782919842
+            },
+            "dead_agents": {
+                "mean": 16.63,
+                "std": 3.8875570735360268
+            },
+            "success_rate": {
+                "mean": 1.0,
+                "std": 0.0
+            }
+        },
+        "2": {
+            "simulation_duration": {
+                "mean": 26.14236000000005,
+                "std": 6.344861132475864
+            },
+            "dead_agents": {
+                "mean": 16.72,
+                "std": 4.65205331009867
+            },
+            "success_rate": {
+                "mean": 1.0,
+                "std": 0.0
+            }
+        },
+        "3": {
+            "simulation_duration": {
+                "mean": 25.786299999999983,
+                "std": 6.948281854530875
+            },
+            "dead_agents": {
+                "mean": 13.62,
+                "std": 4.869866527945093
+            },
+            "success_rate": {
+                "mean": 1.0,
+                "std": 0.0
+            }
+        },
+        "4": {
+            "simulation_duration": {
+                "mean": 25.430890000000005,
+                "std": 5.022507700133623
+            },
+            "dead_agents": {
+                "mean": 13.97,
+                "std": 4.4709171318645575
+            },
+            "success_rate": {
+                "mean": 1.0,
+                "std": 0.0
+            }
+        },
+        "5": {
+            "simulation_duration": {
+                "mean": 21.06955999999985,
+                "std": 3.5898727646534634
+            },
+            "dead_agents": {
+                "mean": 14.37,
+                "std": 2.583234406707994
+            },
+            "success_rate": {
+                "mean": 1.0,
+                "std": 0.0
+            }
+        },
+        "6": {
+            "simulation_duration": {
+                "mean": 30.74996000000011,
+                "std": 8.17990504580609
+            },
+            "dead_agents": {
+                "mean": 17.77,
+                "std": 4.632180911838397
+            },
+            "success_rate": {
+                "mean": 1.0,
+                "std": 0.0
+            }
+        }
+    },
+    "ERRT": {
+        "1": {
+            "simulation_duration": {
+                "mean": 59.651810000000175,
+                "std": 1.281102288616822
+            },
+            "dead_agents": {
+                "mean": 32.89,
+                "std": 8.250933280544691
+            },
+            "success_rate": {
+                "mean": 0.13,
+                "std": 0.33630343441600474
+            }
+        },
+        "2": {
+            "simulation_duration": {
+                "mean": 48.80268000000034,
+                "std": 5.185412918717291
+            },
+            "dead_agents": {
+                "mean": 27.83,
+                "std": 8.789829349879325
+            },
+            "success_rate": {
+                "mean": 0.95,
+                "std": 0.2179449471770337
+            }
+        },
+        "3": {
+            "simulation_duration": {
+                "mean": 59.47581000000013,
+                "std": 1.791602113723648
+            },
+            "dead_agents": {
+                "mean": 40.07,
+                "std": 9.316925458540494
+            },
+            "success_rate": {
+                "mean": 0.12,
+                "std": 0.32496153618543844
+            }
+        },
+        "4": {
+            "simulation_duration": {
+                "mean": 58.869670000000404,
+                "std": 2.5497138390608876
+            },
+            "dead_agents": {
+                "mean": 39.01,
+                "std": 9.235253109687898
+            },
+            "success_rate": {
+                "mean": 0.36,
+                "std": 0.48
+            }
+        },
+        "5": {
+            "simulation_duration": {
+                "mean": 54.8282600000006,
+                "std": 6.087951976847154
+            },
+            "dead_agents": {
+                "mean": 33.8,
+                "std": 8.917398723843183
+            },
+            "success_rate": {
+                "mean": 0.61,
+                "std": 0.4877499359302879
+            }
+        },
+        "6": {
+            "simulation_duration": {
+                "mean": 59.45788000000006,
+                "std": 2.9132370802251915
+            },
+            "dead_agents": {
+                "mean": 37.02,
+                "std": 6.642258651994816
+            },
+            "success_rate": {
+                "mean": 0.06,
+                "std": 0.23748684174075835
+            }
+        }
+    },
+    "NBV": {
+        "1": {
+            "simulation_duration": {
+                "mean": 60.0,
+                "std": 0.0
+            },
+            "dead_agents": {
+                "mean": 33.0,
+                "std": 0.0
+            },
+            "success_rate": {
+                "mean": 0.0,
+                "std": 0.0
+            }
+        },
+        "2": {
+            "simulation_duration": {
+                "mean": 60.0,
+                "std": 0.0
+            },
+            "dead_agents": {
+                "mean": 50.0,
+                "std": 0.0
+            },
+            "success_rate": {
+                "mean": 0.0,
+                "std": 0.0
+            }
+        },
+        "3": {
+            "simulation_duration": {
+                "mean": 60.0,
+                "std": 0.0
+            },
+            "dead_agents": {
+                "mean": 43.0,
+                "std": 0.0
+            },
+            "success_rate": {
+                "mean": 0.0,
+                "std": 0.0
+            }
+        },
+        "4": {
+            "simulation_duration": {
+                "mean": 60.0,
+                "std": 0.0
+            },
+            "dead_agents": {
+                "mean": 34.0,
+                "std": 0.0
+            },
+            "success_rate": {
+                "mean": 0.0,
+                "std": 0.0
+            }
+        },
+        "5": {
+            "simulation_duration": {
+                "mean": 60.0,
+                "std": 0.0
+            },
+            "dead_agents": {
+                "mean": 36.0,
+                "std": 0.0
+            },
+            "success_rate": {
+                "mean": 0.0,
+                "std": 0.0
+            }
+        },
+        "6": {
+            "simulation_duration": {
+                "mean": 17.713139999999683,
+                "std": 0.008533486977781411
+            },
+            "dead_agents": {
+                "mean": 36.0,
+                "std": 0.0
+            },
+            "success_rate": {
+                "mean": 1.0,
+                "std": 0.0
+            }
+        }
+    }
+}
