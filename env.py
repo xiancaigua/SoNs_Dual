@@ -594,9 +594,10 @@ class World:
         if now_time - self.brain.last_reason_time > 1.0:
             assignments = self.brain.find_nbv_targets_for_assignment(self.large_agents, len(self.large_agents+self.agents))
             self.brain.last_reason_time = now_time
-            for la in self.large_agents + self.agents:
-                la.task_seq = [assignments.pop()]
-                la.plan_path_sequence()
+            if assignments:
+                for la in self.large_agents + self.agents:
+                    la.task_seq = [assignments.pop()]
+                    la.plan_path_sequence()
 
         for la in self.large_agents:
             # if now_time - la.last_reason_time > BRAIN_REASON_INTERVAL:

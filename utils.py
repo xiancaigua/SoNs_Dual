@@ -122,7 +122,8 @@ def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=
             "coverage_percentage": world.coverage_percentage(),
             "victim_rescued": world.victim.rescued,
             "obstacles_count": len(world.obstacles),
-            "danger_zones_count": len(world.danger_zones)
+            "danger_zones_count": len(world.danger_zones),
+            "explored_safe_count":len(world.visited_grid)
         },
         "agent_details": {
             "small_agents": [],

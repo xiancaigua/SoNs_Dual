@@ -1040,7 +1040,7 @@ class LargeAgent(AgentBase):
     # ---------------------------------------------------------
     # 工具函数：检查点是否安全
     # ---------------------------------------------------------
-    def find_nbv_targets_for_assignment(self, all_large_agents, num_targets=4, temperature=0.5):
+    def find_nbv_targets_for_assignment(self, all_large_agents, num_targets=4, temperature=0.25):
         """
         基于 Next Best Viewpoint (NBV) 策略寻找最优的分配目标点。
         新增了基于 Softmax 的随机选择，以保证多次运行结果不同。
@@ -1112,9 +1112,7 @@ class LargeAgent(AgentBase):
         # 提取所有正效用值
         positive_scores = [s[0] for s in scored_targets if s[0] > 0]
         
-        if not positive_scores:
-            # 如果所有目标效用都 <= 0, 随机选择 num_targets 个（或返回空）
-            return []
+        # 如果所有目标效用都 <= 0, 随机选择 num_targets 个（或返回空）
             
         # 计算 Softmax 概率
         utilities = np.array(positive_scores)
@@ -1147,6 +1145,8 @@ class LargeAgent(AgentBase):
             pos_of_cell(c, r)  
             for (c, r) in best_targets_cells
         ]
+        if not best_targets:
+            print("Warning Best Targets is null!")
         
         return best_targets
 
