@@ -497,83 +497,6 @@ class LargeAgent(AgentBase):
         self.death_queue = []
         self.rescue_target = None
 
-    def find_nbv_targets_for_assignment(self, all_large_agents, num_targets=4):
-        """
-        基于 Next Best Viewpoint (NBV) 策略寻找最优的分配目标点。
-        
-        NBV 效用函数: Utility = (Information Gain) / (Distance Cost)
-        
-        Args:
-            all_large_agents (list): 所有大型探索机器人列表 (用于协作惩罚)。
-            num_targets (int): 需要返回的目标点数量（例如 4 个）。
-            
-        Returns:
-            list: 最佳 NBV 目标的坐标列表 [(x1, y1), (x2, y2), ...]
-        """
-        # 1. 初始化地图和位置
-        grid = self.known_map
-        my_pos = self.pos
-        cell_of_mypos = cell_of_pos(my_pos)
-        # 2. 生成 NBV 候选点 (通常为前沿聚类中心)
-        try:
-            # 假设 _find_frontier_centroids 返回所有全局前沿点中心
-            candidates = self._find_frontier_centroids(grid, cell_of_mypos)
-        except AttributeError:
-            print("Error: _find_frontier_centroids not found. Cannot run NBV.")
-            return []
-
-        if not candidates:
-            return []
-
-        # 3. 获取队友计划 (实现协作)
-        peer_plans = self._collect_peer_plans(all_large_agents)
-        
-        # 用于存储所有候选点的 (效用值, 目标点坐标)
-        scored_targets = []
-        
-        # 4. 评估每个候选点的效用 (Utility)
-        for target_pos in candidates:
-            
-            # 4.1. 成本估算 (Cost Estimation)
-            # 使用欧氏距离作为路径成本的快速近似
-            cost = math.hypot(target_pos[0] - cell_of_mypos[0], target_pos[1] - cell_of_mypos[1])
-            
-            # 设置最小成本阈值，避免距离太短导致效用值过高，鼓励向外走
-            min_cost_threshold = 10.0 # 假设 10 个世界坐标单位
-            if cost < min_cost_threshold:
-                cost = min_cost_threshold
-
-            # 4.2. 增益估算 (Information Gain)
-            try:
-                # _evaluate_state 应该返回的信息增益已经包含了协作惩罚
-                gain = self._evaluate_state(target_pos, grid, peer_plans)
-            except AttributeError:
-                print("Error: _evaluate_state not found. Cannot calculate gain.")
-                return [] # 错误处理
-            
-            if gain <= 0:
-                utility = 0.0
-            else:
-                # 4.3. 效用计算 (Utility Calculation)
-                # 目标是最大化单位距离下的信息增益
-                utility = gain / cost
-            
-            # 存储结果
-            scored_targets.append((utility, target_pos))
-
-        # 5. 选择最优目标并排序
-        
-        # 按效用值降序排列
-        scored_targets.sort(key=lambda x: x[0], reverse=True)
-        
-        # 提取前 num_targets 个目标的坐标
-        best_targets = [
-            pos_of_cell(target_info[1][0],target_info[1][1])  # 目标点坐标 (第二个元素)
-            for target_info in scored_targets[:num_targets]
-        ]
-        
-        return best_targets
-
     def assign_targets(self, targets_list, sons_list):
         """
         将 MCTS 规划出的目标点分配给自身和小机器人。
@@ -623,35 +546,6 @@ class LargeAgent(AgentBase):
         if len(children) == 0:
             return None
         return self.multi_behavior.decide(self,children)
-
-    def integrate_map_patch(self, patch):
-        """将收到的patch应用到自己的known_map"""
-        for (i,j,val) in patch:
-            # val is occupancy code
-            if 0 <= i < GRID_H and 0 <= j < GRID_W:
-                # overwrite unknowns or keep obstacle/danger priority
-                if self.known_map[i,j] == UNKNOWN and val != UNKNOWN:
-                    self.known_map[i,j] = val
-                else:
-                    # 若已有UNKNOWN则覆盖，否则保持原先（或根据优先级更新）
-                    # 优先级： DANGER/OBSTACLE > VICTIM > FREE
-                    cur = self.known_map[i,j]
-                    if val == DANGER or val == OBSTACLE:
-                        self.known_map[i,j] = val
-                    elif val == VICTIM:
-                        self.known_map[i,j] = val
-                    elif cur == UNKNOWN:
-                        self.known_map[i,j] = val
-        self.fuse_own_sensing()
-        self.local_map = self.known_map.copy()
-
-    def fuse_own_sensing(self):
-        """将自己感知到的地图写入 known_map"""
-        inds = np.where(self.local_map != UNKNOWN)
-        for i,j in zip(inds[0].tolist(), inds[1].tolist()):
-            if self.known_map[i,j] == DANGER:
-                continue
-            self.known_map[i,j] = self.local_map[i,j]
 
     def nav_to_centroid(self, my_children):
         # 只有在 rescue_target 为 None 时才会执行到这里        
@@ -725,7 +619,7 @@ class LargeAgent(AgentBase):
 
         return None
 
-    def update_strategy(self, world, my_children):
+    def my_update_strategy(self, world, my_children):
         """
         每帧调用一次。根据优先级决定当前的导航目标。
         优先级 1: 救援模式 (处理 death_queue -> 前往事故点 -> 扫描 & 增援)
@@ -1146,6 +1040,116 @@ class LargeAgent(AgentBase):
     # ---------------------------------------------------------
     # 工具函数：检查点是否安全
     # ---------------------------------------------------------
+    def find_nbv_targets_for_assignment(self, all_large_agents, num_targets=4, temperature=0.5):
+        """
+        基于 Next Best Viewpoint (NBV) 策略寻找最优的分配目标点。
+        新增了基于 Softmax 的随机选择，以保证多次运行结果不同。
+        
+        Args:
+            all_large_agents (list): 所有大型探索机器人列表。
+            num_targets (int): 需要返回的目标点数量。
+            temperature (float): Softmax探索温度 (tau)。
+                                tau 越大，随机性越强；tau 趋近 0，选择越贪婪。
+                                建议值: 0.1 - 1.0
+            
+        Returns:
+            list: 随机选择的 num_targets 个最佳 NBV 目标的坐标列表。
+        """
+        # 1. 初始化地图和位置
+        grid = self.known_map
+        my_pos = self.pos
+        # 修正：确保 cost 计算使用世界坐标，或统一使用栅格坐标
+        cx_my, cy_my = cell_of_pos(my_pos)
+        
+        # ... (步骤 2, 3, 4.1, 4.2 保持不变) ...
+
+        # 2. 生成 NBV 候选点 
+        try:
+            candidates = self._find_frontier_centroids(grid, (cx_my, cy_my))
+        except AttributeError:
+            print("Error: _find_frontier_centroids not found. Cannot run NBV.")
+            return []
+
+        if not candidates:
+            return []
+
+        # 3. 获取队友计划
+        peer_plans = self._collect_peer_plans(all_large_agents)
+        scored_targets = []
+        
+        # 4. 评估每个候选点的效用 (Utility)
+        for target_cell_pos in candidates:
+            # target_cell_pos 是 (cx, cy) 栅格坐标
+            
+            # 4.1. 成本估算 (Cost Estimation)
+            # 修正：确保成本计算是在同一坐标系下。这里使用栅格距离。
+            cost = math.hypot(target_cell_pos[0] - cx_my, target_cell_pos[1] - cy_my)
+            
+            # 设置最小成本阈值
+            min_cost_threshold = 10.0
+            if cost < min_cost_threshold:
+                cost = min_cost_threshold
+
+            # 4.2. 增益估算 (Information Gain)
+            try:
+                # target_cell_pos 是栅格坐标 (cx, cy)
+                gain = self._evaluate_state(target_cell_pos, grid, peer_plans)
+            except AttributeError:
+                print("Error: _evaluate_state not found. Cannot calculate gain.")
+                return []
+            
+            if gain <= 0:
+                utility = 0.0
+            else:
+                # 4.3. 效用计算 (Utility Calculation)
+                utility = gain / cost
+            
+            # 存储结果：(效用值, 栅格坐标)
+            scored_targets.append((utility, target_cell_pos))
+
+        # 5. 引入随机性：基于 Softmax/Boltzmann 的目标选择 (关键修改)
+        
+        # 提取所有正效用值
+        positive_scores = [s[0] for s in scored_targets if s[0] > 0]
+        
+        if not positive_scores:
+            # 如果所有目标效用都 <= 0, 随机选择 num_targets 个（或返回空）
+            return []
+            
+        # 计算 Softmax 概率
+        utilities = np.array(positive_scores)
+        
+        # 避免数值溢出：减去最大值
+        exp_utilities = np.exp((utilities - np.max(utilities)) / temperature)
+        probabilities = exp_utilities / np.sum(exp_utilities)
+        
+        # 获取对应于正效用值的目标点索引
+        positive_targets = [s for s in scored_targets if s[0] > 0]
+        
+        # 使用 np.random.choice 进行带权重的随机采样
+        # 采样 num_targets 个目标点，可以重复 (replace=True)，也可以不重复 (replace=False)
+        # 对于分配任务，通常选择不重复目标 (replace=False)
+        num_to_sample = min(num_targets, len(positive_targets))
+        
+        # 执行带权重的随机采样
+        sampled_indices = np.random.choice(
+            a=len(positive_targets), 
+            size=num_to_sample, 
+            p=probabilities, 
+            replace=False # 不重复选择目标点
+        )
+        
+        best_targets_cells = [positive_targets[i][1] for i in sampled_indices]
+
+        # 6. 转换为世界坐标系并返回
+        
+        best_targets = [
+            pos_of_cell(c, r)  
+            for (c, r) in best_targets_cells
+        ]
+        
+        return best_targets
+
     def _ensure_safe_target(self, pos, world):
             """如果 pos 在障碍物/已知危险中，BFS 搜索最近的可行点"""
             cx, cy = cell_of_pos(pos)
@@ -1210,26 +1214,27 @@ class LargeAgent(AgentBase):
         # 2. 计算基础增益 (有多少个 UNKNOWN)
         gain = 0
         for (c, r) in visible_cells:
-            if 0<=c+pos[0]<GRID_W and 0<=r+pos[1]<GRID_H:
-                if grid[r+pos[1], c+pos[0]] == UNKNOWN: # UNKNOWN
-                    gain += 1.5
-                elif grid[r+pos[1], c+pos[0]] == DANGER:
+            if 0<=c<GRID_W and 0<=r<GRID_H:
+                if grid[r, c] == UNKNOWN: # UNKNOWN
+                    gain += 1.75
+                elif grid[r, c] == DANGER:
                     gain -= 2
         
         # 3. 协作惩罚
         for (c, r) in visible_cells:
             for peer_traj in peer_plans:
-                if self._is_covered_by_peers(c+pos[0], r+pos[1], peer_traj):
-                    gain -= 100 # 扣除收益
+                if self._is_covered_by_peers(c, r, peer_traj):
+                    gain -= 1 # 扣除收益
                     break
                     
-        return max(0, gain)
+        return gain
 
     def _get_visible_cells(self, pos, grid):
         """获取 pos 位置传感器覆盖的栅格坐标列表"""
         # 简单圆形区域
         cells = []
-        cx, cy = cell_of_pos(pos) # 转栅格坐标
+        # cx, cy = cell_of_pos(pos) # 转栅格坐标
+        cx, cy = pos # 转栅格坐标
         r = int(self.sensor_range//GRID_CELL)
         for i in range(-r, r+1):
             for j in range(-r, r+1):
@@ -1366,6 +1371,7 @@ class LargeAgent(AgentBase):
                     came[(nx, ny)] = (x, y)
 
         return None
+
     def draw_self(self, screen):
         if self.is_brain:
             color = (220, 100, 40)

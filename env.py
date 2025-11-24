@@ -587,8 +587,8 @@ class World:
                 for la in self.large_agents:
                     if a.father_id == la.id:
                         la.known_map = np.maximum(la.known_map, a.local_map)
+                        la.local_map = la.known_map
                         self.known_grid = np.maximum(self.known_grid, la.known_map)
-                        self.local_map = self.known_grid
         self.brain.known_map = self.known_grid
 
         if now_time - self.brain.last_reason_time > 1.0:
@@ -610,7 +610,7 @@ class World:
                     la.recognize_danger_area(self)
                     death_info = la.death_queue.pop(0)
                     pos = death_info['dead_pos']
-                    la.known_map[pos[1],pos[1]] = DANGER
+                    la.known_map[pos[1],pos[0]] = DANGER
 
         # 5. 所有 agent 执行 step_motion（跟踪各自的 planned_path）
         for a in self.agents + self.large_agents:

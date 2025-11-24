@@ -31,14 +31,9 @@ def main(rounds=1):
 
     # communication system
     comms = Communication(packet_loss=COMM_PACKET_LOSS, delay=COMM_DELAY)
-    world_seeds = [110716, 710, 8848, 1107, 233174, 1919148]
-    # map_files = get_map_files("map")
-    # save_filename = map_files[rounds//100][1]
-    # world = World.load_state(save_filename)
-    world = World(seed=world_seeds[rounds//100])
-    # world.save_state(f"world_seed_{SEED}_init_state.pkl")
-    # if BASELINE:
-    #     world.set_state()
+    world_seeds = [110716, 710, 8848, 1107, 233174, 12142325, 258, 8456, 1985, 819, 789654, 666]
+    world = World(seed=world_seeds[rounds // 100])
+
 
     running = True
     paused = False
@@ -148,6 +143,6 @@ def main(rounds=1):
 
 
 if __name__ == "__main__":
-    for i in range(600): 
+    for i in range(1200): 
         main(i)
     sys.exit(0)
