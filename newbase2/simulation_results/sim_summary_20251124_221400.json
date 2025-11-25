@@ -1,0 +1,268 @@
+{
+  "metadata": {
+    "timestamp": "20251124_221400",
+    "simulation_time": "1.14s",
+    "result": "failure",
+    "screenshot_path": "simulation_screenshots/sim_20251124_221400_final_failure.png"
+  },
+  "statistics": {
+    "simulation_duration": 1.1440000000000001,
+    "alive_small_agents": 0,
+    "total_small_agents": 6,
+    "alive_large_agents": 0,
+    "total_large_agents": 3,
+    "map_id": 12,
+    "spawn_times": 6,
+    "dead_agents": 30,
+    "coverage_percentage": 0.0,
+    "victim_rescued": false,
+    "obstacles_count": 10,
+    "danger_zones_count": 15,
+    "explored_safe_count": 70
+  },
+  "agent_details": {
+    "small_agents": [],
+    "large_agents": [
+      {
+        "id": 2,
+        "alive": false,
+        "energycost": 17.857698723350133,
+        "final_position": [
+          475,
+          295
+        ],
+        "trajectory_length": 11,
+        "hist_traj": [
+          [
+            475,
+            375
+          ],
+          [
+            475,
+            375
+          ],
+          [
+            475,
+            365
+          ],
+          [
+            475,
+            355
+          ],
+          [
+            475,
+            345
+          ],
+          [
+            475,
+            335
+          ],
+          [
+            475,
+            325
+          ],
+          [
+            475,
+            315
+          ],
+          [
+            485,
+            305
+          ],
+          [
+            485,
+            305
+          ],
+          [
+            475,
+            295
+          ]
+        ],
+        "known_cells": 898,
+        "total_cells": 7000,
+        "known_percentage": 12.828571428571427,
+        "son_agents": [
+          1006,
+          1007,
+          1008
+        ]
+      },
+      {
+        "id": 1,
+        "alive": false,
+        "energycost": 34.82826147182728,
+        "final_position": [
+          475,
+          295
+        ],
+        "trajectory_length": 17,
+        "hist_traj": [
+          [
+            475,
+            375
+          ],
+          [
+            475,
+            375
+          ],
+          [
+            485,
+            375
+          ],
+          [
+            495,
+            375
+          ],
+          [
+            505,
+            375
+          ],
+          [
+            515,
+            375
+          ],
+          [
+            525,
+            375
+          ],
+          [
+            535,
+            365
+          ],
+          [
+            545,
+            365
+          ],
+          [
+            545,
+            365
+          ],
+          [
+            535,
+            355
+          ],
+          [
+            525,
+            345
+          ],
+          [
+            515,
+            335
+          ],
+          [
+            505,
+            325
+          ],
+          [
+            495,
+            315
+          ],
+          [
+            485,
+            305
+          ],
+          [
+            475,
+            295
+          ]
+        ],
+        "known_cells": 1062,
+        "total_cells": 7000,
+        "known_percentage": 15.171428571428573,
+        "son_agents": [
+          1003,
+          1004,
+          1005
+        ]
+      },
+      {
+        "id": 0,
+        "alive": false,
+        "energycost": 35.65668859657347,
+        "final_position": [
+          475,
+          245
+        ],
+        "trajectory_length": 17,
+        "hist_traj": [
+          [
+            475,
+            375
+          ],
+          [
+            475,
+            375
+          ],
+          [
+            485,
+            365
+          ],
+          [
+            495,
+            355
+          ],
+          [
+            505,
+            345
+          ],
+          [
+            515,
+            335
+          ],
+          [
+            525,
+            335
+          ],
+          [
+            525,
+            335
+          ],
+          [
+            515,
+            325
+          ],
+          [
+            515,
+            315
+          ],
+          [
+            505,
+            305
+          ],
+          [
+            505,
+            295
+          ],
+          [
+            495,
+            285
+          ],
+          [
+            495,
+            275
+          ],
+          [
+            485,
+            265
+          ],
+          [
+            485,
+            255
+          ],
+          [
+            475,
+            245
+          ]
+        ],
+        "known_cells": 1140,
+        "total_cells": 7000,
+        "known_percentage": 16.28571428571429,
+        "son_agents": [
+          1000,
+          1001,
+          1002
+        ]
+      }
+    ]
+  }
+}

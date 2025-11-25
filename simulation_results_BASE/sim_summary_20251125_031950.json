@@ -1,0 +1,112 @@
+{
+  "metadata": {
+    "timestamp": "20251125_031950",
+    "simulation_time": "7.10s",
+    "result": "failure",
+    "screenshot_path": "simulation_screenshots/sim_20251125_031950_final_failure_BASE.png"
+  },
+  "statistics": {
+    "simulation_duration": 7.099999999999969,
+    "alive_small_agents": 0,
+    "total_small_agents": 6,
+    "alive_large_agents": 0,
+    "total_large_agents": 3,
+    "map_id": 4,
+    "spawn_times": 6,
+    "dead_agents": 30,
+    "coverage_percentage": 0.0,
+    "victim_rescued": false,
+    "obstacles_count": 10,
+    "danger_zones_count": 15,
+    "explored_safe_count": 70
+  },
+  "agent_details": {
+    "small_agents": [],
+    "large_agents": [
+      {
+        "id": 1,
+        "alive": false,
+        "energycost": 3.3033335764479315,
+        "final_position": [
+          925,
+          335
+        ],
+        "trajectory_length": 2,
+        "hist_traj": [
+          [
+            934,
+            321
+          ],
+          [
+            925,
+            335
+          ]
+        ],
+        "known_cells": 843,
+        "total_cells": 7000,
+        "known_percentage": 12.042857142857143,
+        "son_agents": [
+          1003,
+          1004,
+          1005
+        ]
+      },
+      {
+        "id": 0,
+        "alive": false,
+        "energycost": 3.3033335764479315,
+        "final_position": [
+          925,
+          335
+        ],
+        "trajectory_length": 2,
+        "hist_traj": [
+          [
+            934,
+            321
+          ],
+          [
+            925,
+            335
+          ]
+        ],
+        "known_cells": 911,
+        "total_cells": 7000,
+        "known_percentage": 13.014285714285714,
+        "son_agents": [
+          1000,
+          1001,
+          1002
+        ]
+      },
+      {
+        "id": 2,
+        "alive": false,
+        "energycost": 3.3033335764479315,
+        "final_position": [
+          925,
+          335
+        ],
+        "trajectory_length": 2,
+        "hist_traj": [
+          [
+            934,
+            321
+          ],
+          [
+            925,
+            335
+          ]
+        ],
+        "known_cells": 1230,
+        "total_cells": 7000,
+        "known_percentage": 17.57142857142857,
+        "son_agents": [
+          1006,
+          1007,
+          1008
+        ]
+      }
+    ]
+  }
+}

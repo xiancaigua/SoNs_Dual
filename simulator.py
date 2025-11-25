@@ -6,24 +6,48 @@ import numpy as np
 import os
 from datetime import datetime
 
-from parameters import *
-from utils import *
+# 假设这些是您已有的导入
+from parameters import * 
+from utils import * 
 from communicate import Communication
 from env import World
+# 假设 save_simulation_summary 等在 utils.py 中，这里需要它们能访问到
+# from utils import cell_of_pos, pos_of_cell # 假设 cell_of_pos 和 pos_of_cell 在 utils 中
 
 
+
+# ==================================
+# 💡 实验恢复辅助函数
+# ==================================
+
+def get_completed_runs(results_dir):
+    """统计指定文件夹中已保存的JSON结果文件数量。"""
+    if not os.path.exists(results_dir):
+        return 0
+    # 统计所有以 .json 结尾的文件
+    files = [f for f in os.listdir(results_dir) if f.endswith('.json')]
+    return len(files)
 
 
 # -----------------------------
 # 主循环与UI
 # -----------------------------
 def main(rounds=1):
+    """
+    运行一次仿真实验。
+    rounds: 当前实验的序号 (从 0 到 1199)
+    """
     global SEED
     if SEED is not None:
-        random.seed(SEED)
-        np.random.seed(SEED)
+        # 为每个回合设置一个不同的种子，保证实验的可重复性
+        # 这里使用 rounds 作为辅助因子来生成新的种子
+        current_seed = SEED + rounds 
+        random.seed(current_seed)
+        np.random.seed(current_seed)
+    
     pygame.init()
     clock = pygame.time.Clock()
+    
     if VISUALIZE:
         screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
         pygame.display.set_caption("exploration simulation")
@@ -31,8 +55,18 @@ def main(rounds=1):
 
     # communication system
     comms = Communication(packet_loss=COMM_PACKET_LOSS, delay=COMM_DELAY)
+    
+    # 12 个地图的种子
     world_seeds = [110716, 710, 8848, 1107, 233174, 12142325, 258, 8456, 1985, 819, 789654, 666]
-    world = World(seed=world_seeds[rounds // 100])
+    
+    # 核心逻辑：rounds // 100 决定了当前运行的是第几个地图 (0到11)
+    map_index = rounds // 100
+    if map_index >= len(world_seeds):
+        print(f"ERROR: rounds {rounds} exceeds total maps.")
+        return
+        
+    world = World(seed=world_seeds[map_index])
+    print(f"--- Running Experiment {rounds + 1} (Map Index: {map_index}, Seed: {world_seeds[map_index]}) ---")
 
 
     running = True
@@ -61,10 +95,11 @@ def main(rounds=1):
                         paused = not paused
                     elif event.key == pygame.K_s:  # 手动保存截图
                         save_simulation_screenshot(screen, world, sim_time, "manual")
+        
         if not paused:
             if BASELINE:
-                world.update_base2(dt, comms, now_time)
-                # world.update_baseline(dt, comms, now_time)
+                # world.update_base2(dt, comms, now_time)
+                world.update_baseline(dt, comms, now_time)
             else:
                 world.update(dt, comms, now_time)
 
@@ -91,7 +126,6 @@ def main(rounds=1):
             pygame.display.flip()
 
         # 结束条件判断
-        # print("len(world.large_agents)",len(world.large_agents))
         if world.victim.rescued:
             simulation_result = "success"
             print("Mission success: victim rescued")
@@ -99,7 +133,7 @@ def main(rounds=1):
             if VISUALIZE:
                 final_image = create_summary_image(screen, world, sim_time, "SUCCESS", font)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                pygame.image.save(final_image, f"simulation_screenshots/success_{timestamp}.png")
+                pygame.image.save(final_image, f"simulation_screenshots/success_{timestamp}_{map_index}.png")
             paused = True
             running = False
         elif len(world.large_agents) == 0 or world.spawn_times >= MAX_TOLERATE:
@@ -109,7 +143,7 @@ def main(rounds=1):
             if VISUALIZE:
                 final_image = create_summary_image(screen, world, sim_time, "FAILURE", font)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                pygame.image.save(final_image, f"simulation_screenshots/failure_{timestamp}.png")
+                pygame.image.save(final_image, f"simulation_screenshots/failure_{timestamp}_{map_index}.png")
             paused = True
             running = False  
         elif sim_time > 60.0:
@@ -119,7 +153,7 @@ def main(rounds=1):
             if VISUALIZE:
                 final_image = create_summary_image(screen, world, sim_time, "TIMEOUT", font)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                pygame.image.save(final_image, f"simulation_screenshots/timeout_{timestamp}.png")
+                pygame.image.save(final_image, f"simulation_screenshots/timeout_{timestamp}_{map_index}.png")
             paused = True
             running = False
 
@@ -129,11 +163,12 @@ def main(rounds=1):
     #--------实验总结---------
     # 保存最终状态的简单截图
     if VISUALIZE and simulation_result != "unknown":
-        screenshot_path = save_simulation_screenshot(screen, world, sim_time, f"final_{simulation_result}")    # Agent trajectories
+        screenshot_path = save_simulation_screenshot(screen, world, sim_time, f"final_{simulation_result}") 
     else:
         screenshot_path = None
-    # 保存JSON总结
-    json_filename = save_simulation_summary(world, sim_time, simulation_result, screenshot_path, (1 + rounds//10))
+        
+    # 保存JSON总结。 (map_index + 1) 是地图ID (1-12)
+    json_filename = save_simulation_summary(world, sim_time, simulation_result, screenshot_path, map_id=(map_index + 1)) 
 
     # 可选：在控制台显示JSON文件路径
     if json_filename:
@@ -143,6 +178,41 @@ def main(rounds=1):
 
 
 if __name__ == "__main__":
-    for i in range(1200): 
-        main(i)
+    
+    RESULTS_FOLDER = "simulation_results" # 假设这是您保存JSON结果的文件夹
+    TOTAL_RUNS = 1200 # 总共的实验次数 (12 个场景 * 100 次)
+    
+    # 1. 确保 results_dir 存在
+    if not os.path.exists(RESULTS_FOLDER):
+        os.makedirs(RESULTS_FOLDER)
+        
+    # 2. 统计已完成的实验次数
+    completed_runs = get_completed_runs(RESULTS_FOLDER)
+    
+    print(f"=====================================")
+    print(f"        --- 实验恢复模式 ---         ")
+    print(f"=====================================")
+    print(f"结果文件夹: {RESULTS_FOLDER}")
+    print(f"已发现 {completed_runs} 个结果文件。")
+    
+    if completed_runs >= TOTAL_RUNS:
+        print(f"所有 {TOTAL_RUNS} 次实验均已完成。程序退出。")
+        sys.exit(0)
+    
+    start_run = completed_runs
+    runs_to_go = TOTAL_RUNS - start_run
+    
+    # 计算当前应该运行的场景和场景内的次数
+    current_map_index = start_run // 100
+    current_run_in_scene = start_run % 100
+    
+    print(f"将从第 {start_run + 1} 次实验开始运行 (剩余 {runs_to_go} 次)。")
+    print(f"当前地图场景: Scene {current_map_index + 1}, 该场景内运行次数: {current_run_in_scene + 1} / 100。")
+    print(f"=====================================")
+    
+    # 3. 循环从 start_run 开始到 TOTAL_RUNS 结束
+    for i in range(start_run, TOTAL_RUNS):
+        main(i) # 传入当前的实验次数 i
+    
+    print(f"所有 {TOTAL_RUNS} 次实验均已完成。")
     sys.exit(0)

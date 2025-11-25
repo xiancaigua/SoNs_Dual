@@ -78,7 +78,7 @@ def create_summary_image(screen, world, sim_time, result, font):
     
     return summary_surface
 
-def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=None, map_id=None):
+def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=None, map_id=None,results_dir = "simulation_results"):
     """
     将仿真结果保存为JSON文件
     
@@ -90,7 +90,7 @@ def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=
     """
     
     # 创建结果目录
-    results_dir = "simulation_results"
+    
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
     

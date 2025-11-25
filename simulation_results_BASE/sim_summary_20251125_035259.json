@@ -1,0 +1,132 @@
+{
+  "metadata": {
+    "timestamp": "20251125_035259",
+    "simulation_time": "3.66s",
+    "result": "failure",
+    "screenshot_path": "simulation_screenshots/sim_20251125_035259_final_failure_BASE.png"
+  },
+  "statistics": {
+    "simulation_duration": 3.664999999999991,
+    "alive_small_agents": 0,
+    "total_small_agents": 6,
+    "alive_large_agents": 0,
+    "total_large_agents": 3,
+    "map_id": 4,
+    "spawn_times": 6,
+    "dead_agents": 30,
+    "coverage_percentage": 0.0,
+    "victim_rescued": false,
+    "obstacles_count": 10,
+    "danger_zones_count": 15,
+    "explored_safe_count": 70
+  },
+  "agent_details": {
+    "small_agents": [],
+    "large_agents": [
+      {
+        "id": 1,
+        "alive": false,
+        "energycost": 13.10833329540513,
+        "final_position": [
+          925,
+          375
+        ],
+        "trajectory_length": 6,
+        "hist_traj": [
+          [
+            934,
+            321
+          ],
+          [
+            945,
+            335
+          ],
+          [
+            945,
+            345
+          ],
+          [
+            945,
+            355
+          ],
+          [
+            935,
+            365
+          ],
+          [
+            925,
+            375
+          ]
+        ],
+        "known_cells": 906,
+        "total_cells": 7000,
+        "known_percentage": 12.942857142857141,
+        "son_agents": [
+          1003,
+          1004,
+          1005
+        ]
+      },
+      {
+        "id": 0,
+        "alive": false,
+        "energycost": 3.3033335764479315,
+        "final_position": [
+          925,
+          335
+        ],
+        "trajectory_length": 2,
+        "hist_traj": [
+          [
+            934,
+            321
+          ],
+          [
+            925,
+            335
+          ]
+        ],
+        "known_cells": 1026,
+        "total_cells": 7000,
+        "known_percentage": 14.657142857142858,
+        "son_agents": [
+          1000,
+          1001,
+          1002
+        ]
+      },
+      {
+        "id": 2,
+        "alive": false,
+        "energycost": 4.836723145516368,
+        "final_position": [
+          915,
+          335
+        ],
+        "trajectory_length": 3,
+        "hist_traj": [
+          [
+            934,
+            321
+          ],
+          [
+            925,
+            325
+          ],
+          [
+            915,
+            335
+          ]
+        ],
+        "known_cells": 1044,
+        "total_cells": 7000,
+        "known_percentage": 14.914285714285713,
+        "son_agents": [
+          1006,
+          1007,
+          1008
+        ]
+      }
+    ]
+  }
+}

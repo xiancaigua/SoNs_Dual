@@ -487,7 +487,7 @@ class LargeAgent(AgentBase):
         self.brain_reason_time = -10
         self.known_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
         self.is_brain = is_brain  # LargeAgent作为脑节点
-        self.multi_behavior = InformedLocalAssignmentBehavior()
+        self.multi_behavior = ERRTFrontierAssignmentBehavior()
         self.brain_planner = BrainGlobalPlanner()
 
         self.assignments = None
@@ -1040,7 +1040,7 @@ class LargeAgent(AgentBase):
     # ---------------------------------------------------------
     # 工具函数：检查点是否安全
     # ---------------------------------------------------------
-    def find_nbv_targets_for_assignment(self, all_large_agents, num_targets=4, temperature=0.25):
+    def find_nbv_targets_for_assignment(self, all_large_agents, num_targets=12, temperature=0.25):
         """
         基于 Next Best Viewpoint (NBV) 策略寻找最优的分配目标点。
         新增了基于 Softmax 的随机选择，以保证多次运行结果不同。

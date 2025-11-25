@@ -1,0 +1,215 @@
+{
+  "metadata": {
+    "timestamp": "20251124_212919",
+    "simulation_time": "1.11s",
+    "result": "failure",
+    "screenshot_path": "simulation_screenshots/sim_20251124_212919_final_failure.png"
+  },
+  "statistics": {
+    "simulation_duration": 1.1080000000000003,
+    "alive_small_agents": 0,
+    "total_small_agents": 6,
+    "alive_large_agents": 0,
+    "total_large_agents": 3,
+    "map_id": 7,
+    "spawn_times": 6,
+    "dead_agents": 31,
+    "coverage_percentage": 0.0,
+    "victim_rescued": false,
+    "obstacles_count": 10,
+    "danger_zones_count": 15,
+    "explored_safe_count": 70
+  },
+  "agent_details": {
+    "small_agents": [
+      {
+        "id": 1002,
+        "alive": false,
+        "energycost": 1.7539415744862428,
+        "final_position": [
+          205,
+          385
+        ],
+        "trajectory_length": 3,
+        "hist_traj": [
+          [
+            192,
+            377
+          ],
+          [
+            195,
+            375
+          ],
+          [
+            205,
+            385
+          ]
+        ],
+        "explored_cells": 580,
+        "has_goal": true,
+        "goal_position": [
+          215,
+          395
+        ]
+      }
+    ],
+    "large_agents": [
+      {
+        "id": 0,
+        "alive": false,
+        "energycost": 3.5078831489724855,
+        "final_position": [
+          205,
+          385
+        ],
+        "trajectory_length": 3,
+        "hist_traj": [
+          [
+            192,
+            377
+          ],
+          [
+            195,
+            375
+          ],
+          [
+            205,
+            385
+          ]
+        ],
+        "known_cells": 580,
+        "total_cells": 7000,
+        "known_percentage": 8.285714285714285,
+        "son_agents": [
+          1000,
+          1001,
+          1002
+        ]
+      },
+      {
+        "id": 2,
+        "alive": false,
+        "energycost": 9.507883148972486,
+        "final_position": [
+          205,
+          415
+        ],
+        "trajectory_length": 6,
+        "hist_traj": [
+          [
+            192,
+            377
+          ],
+          [
+            195,
+            375
+          ],
+          [
+            195,
+            385
+          ],
+          [
+            195,
+            395
+          ],
+          [
+            195,
+            405
+          ],
+          [
+            205,
+            415
+          ]
+        ],
+        "known_cells": 670,
+        "total_cells": 7000,
+        "known_percentage": 9.571428571428571,
+        "son_agents": [
+          1006,
+          1007,
+          1008
+        ]
+      },
+      {
+        "id": 1,
+        "alive": false,
+        "energycost": 25.507883148972486,
+        "final_position": [
+          205,
+          375
+        ],
+        "trajectory_length": 15,
+        "hist_traj": [
+          [
+            192,
+            377
+          ],
+          [
+            195,
+            375
+          ],
+          [
+            195,
+            365
+          ],
+          [
+            195,
+            355
+          ],
+          [
+            195,
+            345
+          ],
+          [
+            195,
+            335
+          ],
+          [
+            195,
+            325
+          ],
+          [
+            205,
+            315
+          ],
+          [
+            205,
+            315
+          ],
+          [
+            205,
+            325
+          ],
+          [
+            205,
+            335
+          ],
+          [
+            205,
+            345
+          ],
+          [
+            205,
+            355
+          ],
+          [
+            205,
+            365
+          ],
+          [
+            205,
+            375
+          ]
+        ],
+        "known_cells": 991,
+        "total_cells": 7000,
+        "known_percentage": 14.157142857142857,
+        "son_agents": [
+          1003,
+          1004,
+          1005
+        ]
+      }
+    ]
+  }
+}
