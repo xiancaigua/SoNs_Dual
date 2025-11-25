@@ -226,8 +226,7 @@ def main(rounds, results_folder, visualize_override=None):
         
     # 保存JSON总结到指定的独立文件夹
     json_filename = save_simulation_summary(world, sim_time, simulation_result, screenshot_path, 
-                                            map_id=(map_index + 1), run_index=rounds, method=method_name, 
-                                            folder_path=results_folder) 
+                                            map_id=(map_index + 1), results_dir=results_folder) 
 
     if json_filename:
         print(f"详细仿真结果已保存为JSON文件: {json_filename}")
