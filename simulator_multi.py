@@ -95,17 +95,16 @@ def main(rounds, results_folder, visualize_override=None):
     IS_BASELINE_RUN = rounds < BASE_RUNS
     method_name = "BASE" if IS_BASELINE_RUN else "OURS"
     
+    clock = None
+    screen = None
+    font = None
+    
     if current_visualize:
         pygame.init()
         clock = pygame.time.Clock()
         screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
         pygame.display.set_caption(f"exploration simulation - {method_name}")
         font = load_font()
-    else:
-        # 非可视化模式下，clock/screen/font 不会被使用
-        clock = None
-        screen = None
-        font = None
 
     # communication system
     comms = Communication(packet_loss=COMM_PACKET_LOSS, delay=COMM_DELAY)
@@ -127,6 +126,10 @@ def main(rounds, results_folder, visualize_override=None):
 
     running = True
     paused = False
+    
+    # 💡 引入 real-time 计时
+    last_time = time.time()
+    
     sim_time = 0.0
     simulation_result = "unknown"  
 
@@ -135,19 +138,19 @@ def main(rounds, results_folder, visualize_override=None):
         os.makedirs(screenshot_dir)
 
     while running:
-        # 仅在可视化模式下处理时间
-        if current_visualize:
-            dt = clock.tick(FPS) / 1000.0
-            sim_time += 0 if paused else dt
-        else:
-            # 非可视化模式下，我们使用固定的时间步长或直接使用 world.update 的内部时钟
-            dt = 1.0 / FPS # 使用固定的仿真步长
-            sim_time += dt
+        
+        # 💡 使用现实世界时间计算 dt
+        current_time = time.time()
+        dt = current_time - last_time
+        last_time = current_time
+        now_time = current_time 
 
-        now_time = time.time()
-
-        # 事件处理（仅在可视化模式下启用）
-        if current_visualize:
+        # 事件处理和帧率控制（仅在可视化模式下启用）
+        if current_visualize and clock:
+            # 使用 clock.tick 限制绘图循环的帧率，防止 CPU 占用过高。
+            # 仿真时间步长 dt 仍然使用 real-time 计算。
+            clock.tick(FPS) 
+            
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
@@ -158,10 +161,19 @@ def main(rounds, results_folder, visualize_override=None):
                         paused = not paused
                     elif event.key == pygame.K_s:
                         save_simulation_screenshot(screen, world, sim_time, "manual")
+            
+            # 暂停时，不增加仿真时间
+            if paused:
+                dt = 0.0
         
-        # --- 核心修改 3: 执行对应的方法更新 ---
-        if not paused or not current_visualize: # 即使在非可视化模式下，也始终更新
+        # 仿真时间更新：如果是非可视化模式或当前未暂停，则增加 sim_time
+        sim_time += dt
+
+        # --- 执行对应的方法更新 ---
+        # 即使在非可视化模式下，也始终更新（因为 paused 默认为 False）
+        if not paused or not current_visualize: 
             if IS_BASELINE_RUN:
+                # 保持与上一文件一致的函数名
                 world.update_base2(dt, comms, now_time) 
             else:
                 world.update(dt, comms, now_time)
@@ -281,7 +293,6 @@ if __name__ == "__main__":
             # 使用上下文管理器创建进程池
             with multiprocessing.Pool(processes=NUM_PROCESSES) as pool:
                 # 使用 imap_unordered 以非阻塞方式获取结果，并打印进度
-                # 这允许我们看到哪个实验完成了，而无需等待整个批次
                 for i, (run_index, status) in enumerate(pool.imap_unordered(run_experiment_worker, runs_to_schedule)):
                     current_count = completed_runs + i + 1
                     method = "BASE" if run_index < BASE_RUNS else "OURS"

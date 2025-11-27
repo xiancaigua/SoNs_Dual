@@ -123,7 +123,7 @@ def save_simulation_summary(world, sim_time, simulation_result, screenshot_path=
             "victim_rescued": world.victim.rescued,
             "obstacles_count": len(world.obstacles),
             "danger_zones_count": len(world.danger_zones),
-            "explored_safe_count":len(world.visited_grid)
+            "explored_safe_count":int(np.sum(world.visited_grid == FREE))
         },
         "agent_details": {
             "small_agents": [],

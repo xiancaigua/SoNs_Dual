@@ -1,5 +1,9 @@
-# *.json
-# *.png
-# *.pyc
+*.json
+*.png
+*.pyc
 /__pycache__
-tiaoshi
+/newbase1
+
+/newbase2
+
+/newmy

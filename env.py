@@ -343,7 +343,7 @@ class World:
         for la in self.large_agents:
             if la.alive:
                 sons_list = [a for a in self.agents if a.father_id == la .id]
-                la.update_strategy(self,sons_list)
+                la.my_update_strategy(self,sons_list)
 
 
         # 5. 所有 agent 执行 step_motion（跟踪各自的 planned_path）
@@ -403,7 +403,7 @@ class World:
                 alive_agents.append(a)
                 
         self.agents = alive_agents
-        print(len(self.wasted_agents))
+        # print(len(self.wasted_agents))
         # 1. 创建当前所有存活 Small Agent 的 ID 集合，用于快速查找
         alive_small_agent_ids = {a.id for a in self.agents}
 
@@ -1032,3 +1032,6 @@ class World:
             import traceback
             traceback.print_exc() 
             return None
+        
+
+        
