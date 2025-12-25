@@ -10,7 +10,7 @@ import re
 CONFIG = {
     # 1. Input Folders: Change these to your actual folder paths
     "method_folders": [
-        "./newmy/simulation_results",  # Replace with path to Method 1 folder
+        "simulation_results_BASE1",  # Replace with path to Method 1 folder
         "./newbase1/simulation_results",  # Replace with path to Method 2 folder
         "./newbase2/simulation_results"   # Replace with path to Method 3 folder
     ],
