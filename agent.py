@@ -1542,6 +1542,19 @@ class BrainAgent(LargeAgent):
                 break
 
         return assignments
+    
+    # 在 agent.py 的 BrainAgent 类中添加此方法
+    def get_assigned_centers(self, assignments):
+        """将分配结果中的 mask 转换为中心点坐标列表"""
+        centers = []
+        for mid_id, masks in assignments.items():
+            for mask in masks:
+                ys, xs = np.where(mask)
+                if len(xs) > 0:
+                    # 计算该区域的几何中心
+                    cx, cy = pos_of_cell(np.mean(xs), np.mean(ys))
+                    centers.append((float(cx), float(cy)))
+        return centers
 
 
 
