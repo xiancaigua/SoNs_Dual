@@ -22,10 +22,10 @@ AGENT_RADIUS = 6
 LARGE_RADIUS = 10
 
 SENSOR_SMALL = 60
-SENSOR_LARGE = 30
+SENSOR_LARGE = 40
 
-AGENT_MAX_SPEED = 60.0  # pixels per second
-LARGE_AGENT_MAX_SPEED = 20.0  # pixels per second
+AGENT_MAX_SPEED = 10.0  # pixels per second
+LARGE_AGENT_MAX_SPEED = 5.0  # pixels per second
 BRAIN_REASON_INTERVAL = 3.5  # seconds
 FAST_REASON_INTERVAL = 0.5
 

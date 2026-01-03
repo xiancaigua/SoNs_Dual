@@ -75,6 +75,7 @@ class World:
             random.seed(seed)
         self.width = WORLD_W
         self.height = WORLD_H
+        self.seed = seed
         self.time = 0.0
         self.spawn_times = NUM_AGENTS
         
@@ -722,37 +723,30 @@ class World:
                 for la in self.large_agents:
                     if a.father_id == la.id:
                         la.known_map = np.maximum(la.known_map, a.local_map)
+                        la.local_map = la.known_map
                         self.known_grid = np.maximum(self.known_grid, la.known_map)
         self.brain.known_map = self.known_grid
 
+
+
         for la in self.large_agents:
-            if not la.alive:
-                continue
-            sons_list = [a for a in self.agents if a.father_id == la.id]
-            if now_time - la.last_reason_time > BRAIN_REASON_INTERVAL:
-                # assignments = la.large_reason(sons_list)
-                # for id, target in assignments.item():
-                # if not assignments:
-                    # continue
-                for son in sons_list:
-                    # assign = assignments[son.id]
-                    son.task_seq = []
-                    son.has_goal = True
-                    if son.task_seq:
-                        son.plan_path_sequence()
-                la.last_reason_time = now_time
-            la.nav_to_centroid(sons_list)
-            if la.death_queue:
-                self.spawn_reinforcement_agent(la.id)
-                la.recognize_danger_area(self)
-                death_info = la.death_queue.pop(0)
-                # pos = death_info['loc']
+            # if now_time - la.last_reason_time > BRAIN_REASON_INTERVAL:
+            #     sons_list = [a for a in self.agents if a.father_id == la.id]
+            #     assignments = la.find_nbv_targets_for_assignment(self.large_agents,len(sons_list)+1)
+            #     la.last_reason_time = now_time
+            #     la.assign_targets(assignments, sons_list)
+
+                if la.death_queue:
+                    self.spawn_reinforcement_agent(la.id)
+                    la.recognize_danger_area(self)
+                    death_info = la.death_queue.pop(0)
+                    pos = death_info['dead_pos']
+                    la.known_map[pos[1],pos[0]] = DANGER
 
         # 5. 所有 agent 执行 step_motion（跟踪各自的 planned_path）
         for a in self.agents + self.large_agents:
             if a.alive:
-                a.step_motion()
-                # if not a.is_large
+                a.step_motion_force(self)
                 self.mark_visited(a.pos[0], a.pos[1],a.is_large)
        
         self.check_and_handle_deaths()

@@ -181,7 +181,7 @@ def main(rounds=1):
 if __name__ == "__main__":
     
     RESULTS_FOLDER = "simulation_results" # 假设这是您保存JSON结果的文件夹
-    TIMES_ONE_SCENE = 20
+    TIMES_ONE_SCENE = 100
     TOTAL_RUNS = 12 * TIMES_ONE_SCENE # 总共的实验次数 (12 个场景 * TIMES_ONE_SCENE 次)
     
     # 1. 确保 results_dir 存在
