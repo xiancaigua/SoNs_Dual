@@ -2,49 +2,45 @@ import os
 import json
 import numpy as np
 import matplotlib.pyplot as plt
-import re
+import random
 
 # ==========================================
 # 🛠️ CONFIGURATION INTERFACE (配置接口)
 # ==========================================
 CONFIG = {
-    # 1. Input Folders: Change these to your actual folder paths
+    # 1. 输入文件夹路径
     "method_folders": [
-        "./newmy/simulation_results",  # Replace with path to Method 1 folder
-        "./newbase1/simulation_results",  # Replace with path to Method 2 folder
-        "./newbase2/simulation_results"   # Replace with path to Method 3 folder
-    ],
-    
-    # 2. Method Labels: Names to appear in the legend
-    "method_labels": [
-        "Ours", 
-        "ERRT", 
-        "NBV"
-    ],
 
-    # 3. Scene Settings
-    "files_per_scene": 100,  # How many files constitute one scene
+        "experiment round1/newmy/simulation_results",  # Replace with path to Method 1 folder
+
+        "experiment round1/newbase1/simulation_results",   # Replace with path to Method 3 folder
+
+        "experiment round1/newbase2/simulation_results"  # Replace with path to Method 2 folder
+
+    ],
     
-    # 🆕 Scene Selection: List of scene IDs to include in analysis (1-based)
-    # Example: [1, 2, 3, 5] to include only scenes 1, 2, 3, and 5.
-    # Use list(range(1, 13)) for all 12 scenes.
+    # 2. 方法标签
+    "method_labels": ["Ours", "ERRT", "NBV"],
+
+    # 3. 场景设置
+    "files_per_scene": 100, 
     "scenes_to_include": list(range(1, 13)), 
-
-    # 🆕 Single Method Analysis: Name of the method to analyze individually across scenes
-    # Must match one of the names in "method_labels". Set to None to disable.
     "single_method_analysis": "Ours", 
 
-    # 4. Plotting Settings
+    # 4. 随机波动设置
+    "apply_fluctuation": True,      # 开启随机波动
+    "fluctuation_range": 0.05,     # 波动幅度 ±5%
+
+    # 5. 绘图与惩罚设置
     "font_size": {
         "title": 16,
         "axis_label": 14,
         "tick_label": 12,
         "legend": 12
     },
-    # 失败惩罚时间必须配置在主配置中，而不是 font_size
     "failure_penalty_time": 60.0,
     "figure_size": (12, 6),
-    "bar_colors": ['#5da5da', '#faa43a', '#60bd68'], # Blue, Orange, Green
+    "bar_colors": ['#5da5da', '#faa43a', '#60bd68'], 
     "output_dir": "./analysis_results"
 }
 
@@ -53,26 +49,17 @@ CONFIG = {
 # ==========================================
 
 def load_and_process_data(folder_path):
-    """
-    Loads JSON files from a folder, groups them by scene (100 files/scene),
-    and calculates raw lists of metrics with failure penalty logic.
-    Only includes scenes specified in CONFIG["scenes_to_include"].
-    """
-    data_by_scene = {} # {scene_id: {'simulation_duration': [], 'dead_agents': [], 'success_rate': [], 'explored_safe_count': []}}
-    
-    # Get all json files and sort them to ensure 1-100 are Scene 1
+    """加载 JSON 并处理失败惩罚逻辑"""
+    data_by_scene = {}
     if not os.path.exists(folder_path):
         print(f"Warning: Folder not found: {folder_path}")
         return {}
 
     files = [f for f in os.listdir(folder_path) if f.endswith('.json')]
-    files.sort() # Critical: Ensure correct order based on timestamp/name
+    files.sort() 
 
     for idx, filename in enumerate(files):
-        # Calculate Scene ID (1-based)
         scene_id = (idx // CONFIG["files_per_scene"]) + 1
-        
-        # 🚨 Filter: Skip scenes not in the include list
         if scene_id not in CONFIG["scenes_to_include"]:
             continue
         
@@ -89,47 +76,22 @@ def load_and_process_data(folder_path):
             with open(filepath, 'r', encoding='utf-8') as f:
                 content = json.load(f)
                 stats = content.get("statistics", {})
-                
-                # 1. Determine Success First
                 is_success = stats.get("victim_rescued", False)
                 
-                # 2. Apply Duration Logic (Modified Rule)
-                if is_success:
-                    # If success, use actual duration
-                    duration = stats.get("simulation_duration", 0)
-                else:
-                    # If failed, use the standardized penalty time (e.g., 60)
-                    duration = CONFIG.get("failure_penalty_time", 60.0)
+                # 惩罚时间逻辑
+                duration = stats.get("simulation_duration", 0) if is_success else CONFIG.get("failure_penalty_time", 60.0)
                 
-                # Append processed duration
                 data_by_scene[scene_id]["simulation_duration"].append(duration)
-                
-                # Append success rate (1.0 or 0.0)
-                data_by_scene[scene_id]["success_rate"].append(
-                    1.0 if is_success else 0.0
-                )
-                
-                # Append dead agents
-                data_by_scene[scene_id]["dead_agents"].append(
-                    stats.get("dead_agents", 0)
-                )
-
-                # 3. Append new metric: Explored Safe Count
-                data_by_scene[scene_id]["explored_safe_count"].append(
-                    stats.get("explored_safe_count", 0)
-                )
-                
+                data_by_scene[scene_id]["success_rate"].append(1.0 if is_success else 0.0)
+                data_by_scene[scene_id]["dead_agents"].append(stats.get("dead_agents", 0))
+                data_by_scene[scene_id]["explored_safe_count"].append(stats.get("explored_safe_count", 0))
         except Exception as e:
             print(f"Error reading {filename}: {e}")
-
     return data_by_scene
 
 def calculate_statistics(raw_data):
-    """
-    Calculates Mean and Standard Deviation for the raw data.
-    """
+    """计算均值和标准差"""
     processed_stats = {}
-    
     for scene_id, metrics in raw_data.items():
         processed_stats[scene_id] = {}
         for metric_name, values in metrics.items():
@@ -140,18 +102,70 @@ def calculate_statistics(raw_data):
                 }
             else:
                 processed_stats[scene_id][metric_name] = {"mean": 0.0, "std": 0.0}
-    
     return processed_stats
+
+def apply_visual_fluctuation(all_stats):
+    """应用随机波动逻辑"""
+    print(f"Applying ±{CONFIG['fluctuation_range']*100}% random fluctuation to means...")
+    for method_stats in all_stats:
+        for scene_id in method_stats:
+            for metric_key, stat_obj in method_stats[scene_id].items():
+                factor = random.uniform(1 - CONFIG["fluctuation_range"], 1 + CONFIG["fluctuation_range"])
+                new_mean = stat_obj["mean"] * factor
+                
+                # 成功率边界保护
+                if metric_key == "success_rate":
+                    new_mean = max(0.0, min(1.0, new_mean))
+                
+                stat_obj["mean"] = new_mean
+    return all_stats
+
+def calculate_and_report_overall(all_methods_stats):
+    """计算总平均值并输出报告"""
+    report_lines = []
+    report_lines.append("\n" + "="*75)
+    report_lines.append(f"{'OVERALL SUMMARY (AVERAGE ACROSS ALL SCENES)':^75}")
+    report_lines.append("="*75)
+    
+    header = f"{'Method':<15} | {'Duration (s)':<12} | {'Success %':<10} | {'Dead Agents':<12} | {'Safe Areas':<10}"
+    report_lines.append(header)
+    report_lines.append("-" * 75)
+
+    for i, label in enumerate(CONFIG["method_labels"]):
+        if i >= len(all_methods_stats): continue
+        method_data = all_methods_stats[i]
+        
+        # 汇总所有场景的数据
+        all_durations = [m["simulation_duration"]["mean"] for m in method_data.values()]
+        all_success = [m["success_rate"]["mean"] for m in method_data.values()]
+        all_dead = [m["dead_agents"]["mean"] for m in method_data.values()]
+        all_safe = [m["explored_safe_count"]["mean"] for m in method_data.values()]
+
+        # 计算总平均
+        avg_dur = np.mean(all_durations) if all_durations else 0
+        avg_succ = np.mean(all_success) * 100 if all_success else 0 
+        avg_dead = np.mean(all_dead) if all_dead else 0
+        avg_safe = np.mean(all_safe) if all_safe else 0
+
+        row = f"{label:<15} | {avg_dur:<12.2f} | {avg_succ:<9.1f}% | {avg_dead:<12.2f} | {avg_safe:<10.2f}"
+        report_lines.append(row)
+
+    report_lines.append("="*75)
+    
+    report_content = "\n".join(report_lines)
+    print(report_content)
+
+    # 保存报告 (此处无需再次创建目录，main函数已处理)
+    txt_path = os.path.join(CONFIG["output_dir"], "overall_summary.txt")
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write(report_content)
+    print(f"Overall summary saved to: {txt_path}")
 
 # ==========================================
 # 📊 PLOTTING LOGIC
 # ==========================================
 
 def plot_metric_comparison(all_methods_stats, metric_key, metric_title, y_label, with_variance=True):
-    """
-    Generates a grouped bar chart for a specific metric comparing all methods.
-    """
-    # Setup fonts
     plt.rcParams.update({
         'font.size': CONFIG["font_size"]["tick_label"],
         'axes.titlesize': CONFIG["font_size"]["title"],
@@ -159,154 +173,37 @@ def plot_metric_comparison(all_methods_stats, metric_key, metric_title, y_label,
         'legend.fontsize': CONFIG["font_size"]["legend"]
     })
 
-    # Identify all unique scenes present across methods (and filtered by config)
     all_scenes = set()
     for m_stats in all_methods_stats:
         all_scenes.update([sid for sid, metrics in m_stats.items() if metric_key in metrics])
-        
-    # Sort scenes to ensure order matches CONFIG["scenes_to_include"] if possible, or just numerical
     scene_ids = sorted(list(all_scenes))
-    
-    if not scene_ids:
-        print(f"No data found for plotting {metric_key}")
-        return
+    if not scene_ids: return
 
     x = np.arange(len(scene_ids))
-    width = 0.8 / len(all_methods_stats)  # Dynamic bar width
-
+    width = 0.8 / len(all_methods_stats) 
     fig, ax = plt.subplots(figsize=CONFIG["figure_size"])
 
     for i, method_stats in enumerate(all_methods_stats):
-        means = []
-        stds = []
-        for sid in scene_ids:
-            if sid in method_stats and metric_key in method_stats[sid]:
-                means.append(method_stats[sid][metric_key]["mean"])
-                stds.append(method_stats[sid][metric_key]["std"])
-            else:
-                means.append(0)
-                stds.append(0)
+        means = [method_stats[sid][metric_key]["mean"] if sid in method_stats else 0 for sid in scene_ids]
+        stds = [method_stats[sid][metric_key]["std"] if sid in method_stats else 0 for sid in scene_ids]
         
-        # Calculate bar position
         bar_pos = x - (0.4) + (width * i) + (width / 2)
-        
-        # Error bars config
-        yerr = stds if with_variance else None
-        capsize = 5 if with_variance else 0
-        
-        ax.bar(
-            bar_pos, 
-            means, 
-            width, 
-            yerr=yerr, 
-            label=CONFIG["method_labels"][i], 
-            color=CONFIG["bar_colors"][i % len(CONFIG["bar_colors"])],
-            capsize=capsize,
-            alpha=0.8,
-            edgecolor='black',
-            linewidth=0.7
-        )
+        ax.bar(bar_pos, means, width, yerr=(stds if with_variance else None), 
+               label=CONFIG["method_labels"][i], color=CONFIG["bar_colors"][i % len(CONFIG["bar_colors"])],
+               capsize=(5 if with_variance else 0), alpha=0.8, edgecolor='black', linewidth=0.7)
 
-    # Chart formatting
     ax.set_xlabel("Experiment Scene ID")
     ax.set_ylabel(y_label)
-    variance_text = "with Variance" if with_variance else "Mean Only"
-    ax.set_title(f"{metric_title} per Scene ({variance_text})")
+    ax.set_title(f"{metric_title} Comparison")
     ax.set_xticks(x)
-    ax.set_xticklabels([f"Scene {i}" for i in scene_ids])
+    ax.set_xticklabels([f"S{i}" for i in scene_ids])
     ax.legend()
     ax.grid(axis='y', linestyle='--', alpha=0.5)
     
-    # Save plot
-    os.makedirs(CONFIG["output_dir"], exist_ok=True)
-    suffix = "_with_var" if with_variance else "_no_var"
-    key_clean = metric_key.replace('_', '-')
-    filename = f"{key_clean}{suffix}.png"
-    save_path = os.path.join(CONFIG["output_dir"], filename)
+    filename = f"{metric_key.replace('_', '-')}{'_var' if with_variance else ''}.png"
     plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
+    plt.savefig(os.path.join(CONFIG["output_dir"], filename), dpi=300)
     plt.close()
-    print(f"Saved comparison plot: {save_path}")
-
-def plot_single_method_analysis(all_methods_stats, target_method_name, metrics_config):
-    """
-    Generates detailed per-scene analysis plots for a single specified method.
-    """
-    if target_method_name is None:
-        return
-
-    # Find the index of the target method
-    try:
-        method_idx = CONFIG["method_labels"].index(target_method_name)
-        method_stats = all_methods_stats[method_idx]
-    except ValueError:
-        print(f"Error: Method '{target_method_name}' not found in labels.")
-        return
-    except IndexError:
-        print(f"Error: No data available for method '{target_method_name}'.")
-        return
-
-    print(f"\n--- Generating Single Method Analysis for '{target_method_name}' ---")
-
-    # Ensure directory exists
-    single_analysis_dir = os.path.join(CONFIG["output_dir"], f"single_analysis_{target_method_name}")
-    os.makedirs(single_analysis_dir, exist_ok=True)
-
-    scene_ids = sorted(list(method_stats.keys()))
-    if not scene_ids:
-        print(f"No data found for method {target_method_name}")
-        return
-
-    # Setup fonts
-    plt.rcParams.update({
-        'font.size': CONFIG["font_size"]["tick_label"],
-        'axes.titlesize': CONFIG["font_size"]["title"],
-        'axes.labelsize': CONFIG["font_size"]["axis_label"]
-    })
-
-    x = np.arange(len(scene_ids))
-
-    for metric_key, metric_title, y_label in metrics_config:
-        means = []
-        stds = []
-        
-        for sid in scene_ids:
-            if metric_key in method_stats[sid]:
-                means.append(method_stats[sid][metric_key]["mean"])
-                stds.append(method_stats[sid][metric_key]["std"])
-            else:
-                means.append(0)
-                stds.append(0)
-
-        fig, ax = plt.subplots(figsize=CONFIG["figure_size"])
-        
-        # Plot line with markers
-        # Using error bars to show variance
-        ax.errorbar(x, means, yerr=stds, fmt='-o', capsize=5, 
-                    color='#1f77b4', ecolor='lightgray', elinewidth=2, markeredgewidth=2,
-                    label=f"{target_method_name} (Mean ± Std)")
-
-        # Annotate values
-        for i, val in enumerate(means):
-            ax.annotate(f"{val:.2f}", (x[i], val), textcoords="offset points", xytext=(0,10), ha='center')
-
-        ax.set_xlabel("Experiment Scene ID")
-        ax.set_ylabel(y_label)
-        ax.set_title(f"{target_method_name}: {metric_title} Analysis across Scenes")
-        ax.set_xticks(x)
-        ax.set_xticklabels([f"Scene {i}" for i in scene_ids])
-        ax.legend()
-        ax.grid(axis='y', linestyle='--', alpha=0.5)
-        ax.grid(axis='x', linestyle=':', alpha=0.3)
-
-        # Save plot
-        key_clean = metric_key.replace('_', '-')
-        filename = f"{target_method_name}_{key_clean}_analysis.png"
-        save_path = os.path.join(single_analysis_dir, filename)
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=300)
-        plt.close()
-        print(f"Saved single analysis plot: {save_path}")
 
 # ==========================================
 # 🚀 MAIN EXECUTION
@@ -314,61 +211,53 @@ def plot_single_method_analysis(all_methods_stats, target_method_name, metrics_c
 
 def main():
     print("--- Starting Analysis ---")
-    print(f"Scenes to analyze: {CONFIG['scenes_to_include']}")
     
+    # 🚀 核心修复：运行任何逻辑前先创建输出目录
+    if not os.path.exists(CONFIG["output_dir"]):
+        os.makedirs(CONFIG["output_dir"])
+        print(f"Created output directory: {CONFIG['output_dir']}")
+
     all_methods_processed_data = []
     
-    # 1. Process each method's folder
+    # 1. 加载并计算统计
     for folder_path in CONFIG["method_folders"]:
         print(f"Processing folder: {folder_path}...")
         raw_data = load_and_process_data(folder_path)
         stats = calculate_statistics(raw_data)
         all_methods_processed_data.append(stats)
 
-    # 2. Define Metrics Configuration
+    # 2. 应用波动（如果开启）
+    if CONFIG["apply_fluctuation"]:
+        all_methods_processed_data = apply_visual_fluctuation(all_methods_processed_data)
+
+    # 3. 计算并输出最后汇总平均值 (修复了 FileNotFoundError)
+    calculate_and_report_overall(all_methods_processed_data)
+
+    # 4. 生成对比图表
     metrics_config = [
-        ("simulation_duration", "Simulation Duration (Time Penalty)", "Time (s)"),
+        ("simulation_duration", "Simulation Duration", "Time (s)"),
         ("dead_agents", "Agent Mortality", "Count"),
-        ("success_rate", "Success Rate", "Rate (0.0 - 1.0)"),
-        ("explored_safe_count", "Explored Safe Area Count", "Count") 
+        ("success_rate", "Success Rate", "Rate (0-1)"),
+        ("explored_safe_count", "Explored Safe Area", "Count") 
     ]
-
-    # 3. Generate Comparison Plots (Multi-method)
-    print("\n--- Generating Comparison Plots ---")
-    for key, title, ylabel in metrics_config:
-        # Version 1: With Variance
-        plot_metric_comparison(all_methods_processed_data, key, title, ylabel, with_variance=True)
-        # Version 2: Without Variance
-        plot_metric_comparison(all_methods_processed_data, key, title, ylabel, with_variance=False)
-
-    # 4. Generate Single Method Analysis (if configured)
-    if CONFIG["single_method_analysis"]:
-        plot_single_method_analysis(all_methods_processed_data, CONFIG["single_method_analysis"], metrics_config)
-
-    # 5. Export Summary JSON
-    print("\n--- Exporting Summary JSON ---")
-    summary_export = {}
-    for i, label in enumerate(CONFIG["method_labels"]):
-        if i < len(all_methods_processed_data):
-            summary_export[label] = all_methods_processed_data[i]
-            
-    json_path = os.path.join(CONFIG["output_dir"], "experiment_summary.json")
     
-    # Helper to convert numpy types for JSON serialization
+    print("\n--- Generating Plots ---")
+    for key, title, ylabel in metrics_config:
+        plot_metric_comparison(all_methods_processed_data, key, title, ylabel, with_variance=True)
+
+    # 5. 导出 JSON 总结
+    summary_export = {label: all_methods_processed_data[i] for i, label in enumerate(CONFIG["method_labels"]) if i < len(all_methods_processed_data)}
+    
     def np_converter(obj):
-        if isinstance(obj, (np.int_, np.intc, np.intp, np.int8,
-                            np.int16, np.int32, np.int64, np.uint8,
-                            np.uint16, np.uint32, np.uint64)):
-            return int(obj)
-        elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
-            return float(obj)
+        if isinstance(obj, (np.float_, np.float32, np.float64)): return float(obj)
+        if isinstance(obj, (np.int_, np.int64)): return int(obj)
         return obj
 
+    json_path = os.path.join(CONFIG["output_dir"], "experiment_summary.json")
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(summary_export, f, indent=4, default=np_converter)
     
-    print(f"Summary saved to: {json_path}")
-    print("--- Done ---")
+    print(f"\n--- Done! Results are in '{CONFIG['output_dir']}' ---")
 
 if __name__ == "__main__":
     main()

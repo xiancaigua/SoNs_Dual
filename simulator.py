@@ -59,8 +59,8 @@ def main(rounds=1):
     # 12 个地图的种子
     world_seeds = [110716, 710, 8848, 1107, 233174, 12142325, 258, 8456, 1985, 819, 789654, 666]
     
-    # 核心逻辑：rounds // 100 决定了当前运行的是第几个地图 (0到11)
-    map_index = rounds // 100
+    # 核心逻辑：rounds // TIMES_ONE_SCENE 决定了当前运行的是第几个地图 (0到11)
+    map_index = rounds // TIMES_ONE_SCENE
     if map_index >= len(world_seeds):
         print(f"ERROR: rounds {rounds} exceeds total maps.")
         return
@@ -99,7 +99,8 @@ def main(rounds=1):
         if not paused:
             if BASELINE:
                 # world.update_base2(dt, comms, now_time)
-                world.update_baseline(dt, comms, now_time)
+                world.update_base3(dt, comms, now_time)
+                # world.update_baseline(dt, comms, now_time)
             else:
                 world.update(dt, comms, now_time)
 
@@ -180,7 +181,8 @@ def main(rounds=1):
 if __name__ == "__main__":
     
     RESULTS_FOLDER = "simulation_results" # 假设这是您保存JSON结果的文件夹
-    TOTAL_RUNS = 1200 # 总共的实验次数 (12 个场景 * 100 次)
+    TIMES_ONE_SCENE = 20
+    TOTAL_RUNS = 12 * TIMES_ONE_SCENE # 总共的实验次数 (12 个场景 * TIMES_ONE_SCENE 次)
     
     # 1. 确保 results_dir 存在
     if not os.path.exists(RESULTS_FOLDER):
@@ -203,8 +205,8 @@ if __name__ == "__main__":
     runs_to_go = TOTAL_RUNS - start_run
     
     # 计算当前应该运行的场景和场景内的次数
-    current_map_index = start_run // 100
-    current_run_in_scene = start_run % 100
+    current_map_index = start_run // TIMES_ONE_SCENE
+    current_run_in_scene = start_run % TIMES_ONE_SCENE
     
     print(f"将从第 {start_run + 1} 次实验开始运行 (剩余 {runs_to_go} 次)。")
     print(f"当前地图场景: Scene {current_map_index + 1}, 该场景内运行次数: {current_run_in_scene + 1} / 100。")
