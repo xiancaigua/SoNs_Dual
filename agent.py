@@ -481,13 +481,14 @@ class AgentBase:
 
 
 class LargeAgent(AgentBase):
-    def __init__(self, id, x, y, is_brain=False, behavior=None ,multi_behavior=None):
+    def __init__(self, id, x, y, is_brain=False, behavior=None ,multi_behavior=None, world = None):
         super().__init__(id, x, y, sensor_range=SENSOR_LARGE, is_large=True, behavior=behavior)
         self.last_reason_time = -10
         self.brain_reason_time = -10
         self.known_map = np.full((GRID_H, GRID_W), UNKNOWN, dtype=np.int8)  # 脑节点的地图副本
         self.is_brain = is_brain  # LargeAgent作为脑节点
-        self.multi_behavior = ERRTFrontierAssignmentBehavior()
+        # self.multi_behavior = ERRTFrontierAssignmentBehavior()# DMCEExplorationBehavior
+        self.multi_behavior = DMCEExplorationBehavior(world=world)# DMCEExplorationBehavior
         self.brain_planner = BrainGlobalPlanner()
 
         self.assignments = None

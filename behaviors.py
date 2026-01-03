@@ -1153,7 +1153,7 @@ class DMCEExplorationBehavior(Multi_Behavior):
     3. 协作：在 Rollout 阶段扣除队友计划覆盖的区域增益。
     """
 
-    def __init__(self, simulation_budget=10, max_depth=3, rollout_depth=5, num_best_targets=4):
+    def __init__(self, simulation_budget=10, max_depth=3, rollout_depth=5, num_best_targets=4,world=None):
             super().__init__()
             self.sensor_range = SENSOR_SMALL
             self.simulation_budget = simulation_budget  # MCTS 迭代次数 (影响速度)
@@ -1164,38 +1164,32 @@ class DMCEExplorationBehavior(Multi_Behavior):
             self.DISTANCE_PENALTY_WEIGHT = 0.01         # 距离惩罚权重 (解决规划失败和保守问题)
             
             self.cached_frontiers = []
+            self.world = world
 
     # =================================================
     # 1. MCTS 主流程 (decide)
     # =================================================
     def decide(self, agent, agents):
-        """
-        主决策函数：MCTS 规划，并返回前 N 个最佳目标。
-        
-        输出: list of target_pos [(x1, y1), (x2, y2), ...]
-        """
-        grid = getattr(agent,"known_map",agent.local_map)
+        grid = getattr(agent, "known_map", agent.local_map)
         my_pos = agent.pos
         cell_of_mypos = cell_of_pos(my_pos)
-        
-        # 1. 识别全图前沿点
-        self.cached_frontiers = self._find_frontier_centroids(grid, cell_of_mypos)
-        
-        if not self.cached_frontiers:
-            # 探索完成
-            return [] 
 
-        # 2. 获取队友的计划
+        # 1. 前沿点
+        self.cached_frontiers = self._find_frontier_centroids(grid, cell_of_mypos)
+        if not self.cached_frontiers:
+            return {}
+
+        # 2. 队友计划
         peer_plans = self._collect_peer_plans(agent, agents)
 
-        # 3. 构建 MCTS 树
+        # 3. MCTS
         root = MCTSNode(position=my_pos)
         root.untried_actions = self._get_feasible_actions(root.position, grid)
 
         for _ in range(self.simulation_budget):
             leaf = self._select(root)
             depth = self._get_depth(leaf)
-            
+
             if depth < self.max_tree_depth:
                 child = self._expand(leaf, grid)
                 if child:
@@ -1205,23 +1199,26 @@ class DMCEExplorationBehavior(Multi_Behavior):
                 reward = self._evaluate_state(leaf.position, grid, peer_plans)
                 self._backpropagate(leaf, reward)
 
-        # 4. 选择最佳动作 (访问次数最多的前 N 个子节点)
         if not root.children:
-            # 兜底：如果没有生成子节点，去最近的前沿点
-            return [self._get_nearest_frontier(my_pos)] if self.cached_frontiers else []
-        
-        # 按访问次数排序 (Visits)，次数越多，代表 MCTS 认为该路径越有价值
-        # 也可以按平均价值 c.value / c.visits 排序，但 Visits 更能体现搜索的确定性。
+            return {}
+
+        # 4. 取最优目标
         sorted_children = sorted(root.children, key=lambda c: c.visits, reverse=True)
-        
-        # 提取前 N 个目标的坐标
         best_targets = [
-            child.action_to_reach 
+            pos_of_cell(child.action_to_reach[0],child.action_to_reach[1])
             for child in sorted_children[:self.num_best_targets]
         ]
-        
-        # 返回目标点列表
-        return best_targets
+
+        for bt in best_targets:
+            if bt[0]>WORLD_W or bt[1]>WORLD_H or bt[0]<0 or bt[1]<0:
+                best_targets.remove(bt)
+                print(f"[Warning] MCTS generated out-of-bounds target: {bt}")
+        # 5. 找 son agents
+        son_agents = [a for a in agents if getattr(a, "father_id", None) == agent.id]
+
+        # 6. 分配
+        return self._assign_targets_to_sons(son_agents, best_targets)
+
 
     # =================================================
     # 2. MCTS 四大核心步骤
@@ -1306,8 +1303,8 @@ class DMCEExplorationBehavior(Multi_Behavior):
         # 2. (可选) 加入局部随机点 (Local Exploitation)
         # 在 pos 周围随机采样几个 free point，模拟 RRT 的 extend
         for _ in range(3):
-            rand_x = int(pos[0] + random.uniform(-100, 100))
-            rand_y = int(pos[1] + random.uniform(-100, 100))
+            rand_x = int(pos[0] + random.uniform(-10, 10))
+            rand_y = int(pos[1] + random.uniform(-10, 10))
             cell_of_randxy = cell_of_pos((rand_x,rand_y))
             if 0<=cell_of_randxy[0]<GRID_W and 0<=cell_of_randxy[1]<GRID_H and grid[cell_of_randxy[1],cell_of_randxy[0]] == FREE:
                 actions.append((rand_x, rand_y))
@@ -1334,8 +1331,8 @@ class DMCEExplorationBehavior(Multi_Behavior):
             # 采样一个较小的局部区域，模拟几步行走。
             # 假设步长不超过 10-20 个世界坐标单位
             # 如果 GRID_CELL 很大，这个范围也要相应调整
-            rand_x = pos[0] + random.uniform(-100, 100) 
-            rand_y = pos[1] + random.uniform(-100, 100)
+            rand_x = pos[0] + random.uniform(-10, 10) 
+            rand_y = pos[1] + random.uniform(-10, 10)
             cell_of_randxy = cell_of_pos((rand_x,rand_y))
             if 0<=cell_of_randxy[0]<GRID_W and 0<=cell_of_randxy[1]<GRID_H and grid[cell_of_randxy[1],cell_of_randxy[0]] == FREE:
                 actions.append((rand_x, rand_y))
@@ -1477,4 +1474,50 @@ class DMCEExplorationBehavior(Multi_Behavior):
         return min(self.cached_frontiers, key=lambda p: (p[0]-pos[0])**2 + (p[1]-pos[1])**2)
 
 
+    def _assign_targets_to_sons(self, son_agents, targets):
+        """
+        将 DMCE 生成的目标点分配给子机器人
+        返回: {son_id: target_pos}
+        """
+        H, W = GRID_H, GRID_W
+        def is_valid_cell(r, c):
+            """不泄露危险信息，仅判断是否可通行"""
+            if not (0 <= r < H and 0 <= c < W):
+                return False
+            val = self.world.ground_grid[r, c]
+            return val != OBSTACLE and val != DANGER   # 不判断 DANGER，避免信息泄露
 
+
+        def random_valid_cell(max_trials=200):
+            """兜底：随机采样一个合法目标点"""
+            print("[Info] DMCE: 目标点不足，随机分配合法位置")
+            for _ in range(max_trials):
+                r = np.random.randint(0, H)
+                c = np.random.randint(0, W)
+                if is_valid_cell(r, c):
+                    return (r, c)
+            return None
+
+        if not son_agents:
+            return {}
+        elif not targets or len(targets) < len(son_agents):
+            for _ in range(len(son_agents) - len(targets)):
+                targets.append(random_valid_cell())
+
+        assignments = {}
+        remaining_targets = targets.copy()
+
+        for son in son_agents:
+            if not remaining_targets:
+                break
+
+            sx, sy = son.pos
+            # 找最近目标
+            best_t = min(
+                remaining_targets,
+                key=lambda p: (p[0]-sx)**2 + (p[1]-sy)**2
+            )
+            assignments[son.id] = best_t
+            remaining_targets.remove(best_t)
+
+        return assignments
