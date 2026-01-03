@@ -497,128 +497,6 @@ class LargeAgent(AgentBase):
         self.death_queue = []
         self.rescue_target = None
 
-    def assign_targets(self, targets_list, sons_list):
-        """
-        将 MCTS 规划出的目标点分配给自身和小机器人。
-        targets_list: MCTS 返回的最佳目标点列表 [(x1, y1), (x2, y2), (x3, y3), (x4, y4)]
-        """
-        if not targets_list:
-            return
-
-        # 1. 划分目标
-        # 目标总数应为 N，取前 N-1 个分配给小机器人，第 N 个（即第4个）给大机器人自己。
-        # 优化：为了避免大机器人抢占最好的点，通常会采用一个简单的分配策略，例如最近分配或匈牙利分配。
-        
-        # 简单策略：前 N-1 个分配给 N-1 个小机器人，最后一个（最不“好”的）留给自己
-        # 注意：DMCE 返回的 targets_list 是按 MCTS 评估价值（访问次数/收益）排序的。
-
-        # N-1 个目标分配给小机器人
-        child_targets = targets_list[:len(sons_list)] 
-        # 剩余的目标留给自己和未分配的小机器人
-        remaining_targets = targets_list[len(sons_list):]
-        
-        # 2. 给大机器人自己分配目标
-        # 策略：如果剩余目标点还有，取下一个点作为自己的目标。如果不够，就使用第一个分配给小机器人后剩下的最佳点。
-        if remaining_targets:
-            my_target = remaining_targets[0]
-        else:
-            # 如果小机器人数量 > MCTS 规划点数，则大机器人先不规划
-            my_target = None 
-
-        # 3. 更新大机器人的任务序列
-        if my_target:
-            # 大机器人的目标是 MCTS 规划出来的点
-            self.task_seq = [my_target,] 
-            self.plan_path_sequence() # 规划路径到 MCTS 目标
-
-        # 4. 更新小机器人的目标
-        for i, son in enumerate(sons_list):
-            if i < len(child_targets):
-                son_target = child_targets[i]
-                # 假设 small agent 有一个 set_target 方法
-                son.task_seq = [son_target] 
-                son.plan_path_sequence() # 规划小机器人的路径
-
-        # 存储所有分配的目标点，供其他大机器人做协作惩罚时使用
-        self.target_list = targets_list
-
-    def large_reason(self, children):
-        if len(children) == 0:
-            return None
-        return self.multi_behavior.decide(self,children)
-
-    def nav_to_centroid(self, my_children):
-        # 只有在 rescue_target 为 None 时才会执行到这里        
-        if my_children:
-            # 计算重心
-            xs = [c.pos[0] for c in my_children]
-            ys = [c.pos[1] for c in my_children]
-            centroid = (sum(xs) / len(xs), sum(ys) / len(ys))
-            
-            # 规划去重心
-            # 注意：为了避免每一帧都疯狂重规划导致抖动/性能下降，可以加一个距离阈值
-            # 只有当当前目标距离新重心太远，或者当前没有目标时才重规划
-            should_update_centroid = False
-            if not self.has_goal:
-                should_update_centroid = True
-            else:
-                # 如果当前目标和现在的重心偏差超过 30 像素，则更新
-                curr_goal_dist = math.hypot(self.goal[0] - centroid[0], self.goal[1] - centroid[1])
-                if curr_goal_dist > 30.0:
-                    should_update_centroid = True
-            
-            if should_update_centroid:
-                self.planned_path = self.base_astar_path(self.pos, centroid)
-                self.has_goal = True
-                self.goal = centroid
-        else:
-            # 没有子节点？原地待命或者随机漫步
-            pass
-
-    def base_astar_path(self, start_pos, goal_pos):
-        sx, sy = cell_of_pos((start_pos[0], start_pos[1]))
-        gx, gy = cell_of_pos((goal_pos[0], goal_pos[1]))
-
-        open_set = []
-        heapq.heappush(open_set, (0, (sx, sy)))
-        came = {}
-        g_score = { (sx, sy): 0 }
-
-        def h(x, y):  # 曼哈顿启发
-            return abs(x - gx) + abs(y - gy)
-
-        while open_set:
-            _, (x, y) = heapq.heappop(open_set)
-
-            if (x, y) == (gx, gy):
-                # reconstruct
-                path = []
-                cur = (x, y)
-                while cur in came:
-                    path.append(pos_of_cell(*cur))
-                    cur = came[cur]
-                path.reverse()
-                return path
-
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
-                (-1, -1), (-1, 1), (1, -1), (1, 1)]:
-                nx, ny = x + dx, y + dy
-
-                # 越界 or 危险 or 障碍
-                if not (0 <= nx < GRID_W and 0 <= ny < GRID_H):
-                    continue
-                if not self.known_map[ny, nx] == FREE:
-                    continue
-
-                tentative = g_score[(x, y)] + 1
-                if (nx, ny) not in g_score or tentative < g_score[(nx, ny)]:
-                    g_score[(nx, ny)] = tentative
-                    priority = tentative + h(nx, ny)
-                    heapq.heappush(open_set, (priority, (nx, ny)))
-                    came[(nx, ny)] = (x, y)
-
-        return None
-
     def my_update_strategy(self, world, my_children):
         """
         每帧调用一次。根据优先级决定当前的导航目标。
@@ -1037,8 +915,88 @@ class LargeAgent(AgentBase):
                 self.has_goal = True
                 return True
             return False
+
+    def _ensure_safe_target(self, pos, world):
+            """如果 pos 在障碍物/已知危险中，BFS 搜索最近的可行点"""
+            cx, cy = cell_of_pos(pos)
+            if self._is_safe_cell(world, cx, cy):
+                return pos
+            
+            # BFS 搜索最近安全格子
+            # 注意：这里使用 visited_grid 或 known_map，LargeAgent 应该基于自己的认知避障？
+            # 通常为了防止Large送死，这里可以用 world.ground_grid 或者 world.visited_grid (上帝视角辅助)
+            # 或者严格点，用 self.known_map
+            
+            start_node = (cx, cy)
+            q = deque([start_node])
+            visited = {start_node}
+            
+            # 限制搜索范围防止卡死
+            max_steps = 200 
+            steps = 0
+
+            while q and steps < max_steps:
+                curr_x, curr_y = q.popleft()
+                steps += 1
+
+                if self._is_safe_cell(world, curr_x, curr_y):
+                    return pos_of_cell(curr_x, curr_y)
+
+                for dx, dy in [(0,1), (0,-1), (1,0), (-1,0)]:
+                    nx, ny = curr_x + dx, curr_y + dy
+                    if (nx, ny) not in visited and 0 <= nx < GRID_W and 0 <= ny < GRID_H:
+                        visited.add((nx, ny))
+                        q.append((nx, ny))
+            return None
+
+    # 工具函数：A* 寻路
+    def _astar_path(self, start_pos, goal_pos, world):
+        sx, sy = cell_of_pos((start_pos[0], start_pos[1]))
+        gx, gy = cell_of_pos((goal_pos[0], goal_pos[1]))
+
+        open_set = []
+        heapq.heappush(open_set, (0, (sx, sy)))
+        came = {}
+        g_score = { (sx, sy): 0 }
+
+        def h(x, y):  # 曼哈顿启发
+            return abs(x - gx) + abs(y - gy)
+
+        while open_set:
+            _, (x, y) = heapq.heappop(open_set)
+
+            if (x, y) == (gx, gy):
+                # reconstruct
+                path = []
+                cur = (x, y)
+                while cur in came:
+                    path.append(pos_of_cell(*cur))
+                    cur = came[cur]
+                path.reverse()
+                return path
+
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
+                (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                nx, ny = x + dx, y + dy
+
+                # 越界 or 危险 or 障碍
+                if not (0 <= nx < GRID_W and 0 <= ny < GRID_H):
+                    continue
+                if not self._is_safe_cell(world, nx, ny):
+                    continue
+
+                tentative = g_score[(x, y)] + 1
+                if (nx, ny) not in g_score or tentative < g_score[(nx, ny)]:
+                    g_score[(nx, ny)] = tentative
+                    priority = tentative + h(nx, ny)
+                    heapq.heappush(open_set, (priority, (nx, ny)))
+                    came[(nx, ny)] = (x, y)
+
+        return None
+
+
     # ---------------------------------------------------------
-    # 工具函数：检查点是否安全
+    # base方法以及其工具函数
     # ---------------------------------------------------------
     def find_nbv_targets_for_assignment(self, all_large_agents, num_targets=12, temperature=0.25):
         """
@@ -1150,38 +1108,128 @@ class LargeAgent(AgentBase):
         
         return best_targets
 
-    def _ensure_safe_target(self, pos, world):
-            """如果 pos 在障碍物/已知危险中，BFS 搜索最近的可行点"""
-            cx, cy = cell_of_pos(pos)
-            if self._is_safe_cell(world, cx, cy):
-                return pos
-            
-            # BFS 搜索最近安全格子
-            # 注意：这里使用 visited_grid 或 known_map，LargeAgent 应该基于自己的认知避障？
-            # 通常为了防止Large送死，这里可以用 world.ground_grid 或者 world.visited_grid (上帝视角辅助)
-            # 或者严格点，用 self.known_map
-            
-            start_node = (cx, cy)
-            q = deque([start_node])
-            visited = {start_node}
-            
-            # 限制搜索范围防止卡死
-            max_steps = 200 
-            steps = 0
-
-            while q and steps < max_steps:
-                curr_x, curr_y = q.popleft()
-                steps += 1
-
-                if self._is_safe_cell(world, curr_x, curr_y):
-                    return pos_of_cell(curr_x, curr_y)
-
-                for dx, dy in [(0,1), (0,-1), (1,0), (-1,0)]:
-                    nx, ny = curr_x + dx, curr_y + dy
-                    if (nx, ny) not in visited and 0 <= nx < GRID_W and 0 <= ny < GRID_H:
-                        visited.add((nx, ny))
-                        q.append((nx, ny))
+    def large_reason(self, children):
+        if len(children) == 0:
             return None
+        return self.multi_behavior.decide(self,children)
+
+    def nav_to_centroid(self, my_children):
+        # 只有在 rescue_target 为 None 时才会执行到这里        
+        if my_children:
+            # 计算重心
+            xs = [c.pos[0] for c in my_children]
+            ys = [c.pos[1] for c in my_children]
+            centroid = (sum(xs) / len(xs), sum(ys) / len(ys))
+            
+            # 规划去重心
+            # 注意：为了避免每一帧都疯狂重规划导致抖动/性能下降，可以加一个距离阈值
+            # 只有当当前目标距离新重心太远，或者当前没有目标时才重规划
+            should_update_centroid = False
+            if not self.has_goal:
+                should_update_centroid = True
+            else:
+                # 如果当前目标和现在的重心偏差超过 30 像素，则更新
+                curr_goal_dist = math.hypot(self.goal[0] - centroid[0], self.goal[1] - centroid[1])
+                if curr_goal_dist > 30.0:
+                    should_update_centroid = True
+            
+            if should_update_centroid:
+                self.planned_path = self.base_astar_path(self.pos, centroid)
+                self.has_goal = True
+                self.goal = centroid
+        else:
+            # 没有子节点？原地待命或者随机漫步
+            pass
+
+    def base_astar_path(self, start_pos, goal_pos):
+        sx, sy = cell_of_pos((start_pos[0], start_pos[1]))
+        gx, gy = cell_of_pos((goal_pos[0], goal_pos[1]))
+
+        open_set = []
+        heapq.heappush(open_set, (0, (sx, sy)))
+        came = {}
+        g_score = { (sx, sy): 0 }
+
+        def h(x, y):  # 曼哈顿启发
+            return abs(x - gx) + abs(y - gy)
+
+        while open_set:
+            _, (x, y) = heapq.heappop(open_set)
+
+            if (x, y) == (gx, gy):
+                # reconstruct
+                path = []
+                cur = (x, y)
+                while cur in came:
+                    path.append(pos_of_cell(*cur))
+                    cur = came[cur]
+                path.reverse()
+                return path
+
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
+                (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                nx, ny = x + dx, y + dy
+
+                # 越界 or 危险 or 障碍
+                if not (0 <= nx < GRID_W and 0 <= ny < GRID_H):
+                    continue
+                if not self.known_map[ny, nx] == FREE:
+                    continue
+
+                tentative = g_score[(x, y)] + 1
+                if (nx, ny) not in g_score or tentative < g_score[(nx, ny)]:
+                    g_score[(nx, ny)] = tentative
+                    priority = tentative + h(nx, ny)
+                    heapq.heappush(open_set, (priority, (nx, ny)))
+                    came[(nx, ny)] = (x, y)
+
+        return None
+
+    def assign_targets(self, targets_list, sons_list):
+        """
+        将 MCTS 规划出的目标点分配给自身和小机器人。
+        targets_list: MCTS 返回的最佳目标点列表 [(x1, y1), (x2, y2), (x3, y3), (x4, y4)]
+        """
+        if not targets_list:
+            return
+
+        # 1. 划分目标
+        # 目标总数应为 N，取前 N-1 个分配给小机器人，第 N 个（即第4个）给大机器人自己。
+        # 优化：为了避免大机器人抢占最好的点，通常会采用一个简单的分配策略，例如最近分配或匈牙利分配。
+        
+        # 简单策略：前 N-1 个分配给 N-1 个小机器人，最后一个（最不“好”的）留给自己
+        # 注意：DMCE 返回的 targets_list 是按 MCTS 评估价值（访问次数/收益）排序的。
+
+        # N-1 个目标分配给小机器人
+        child_targets = targets_list[:len(sons_list)] 
+        # 剩余的目标留给自己和未分配的小机器人
+        remaining_targets = targets_list[len(sons_list):]
+        
+        # 2. 给大机器人自己分配目标
+        # 策略：如果剩余目标点还有，取下一个点作为自己的目标。如果不够，就使用第一个分配给小机器人后剩下的最佳点。
+        if remaining_targets:
+            my_target = remaining_targets[0]
+        else:
+            # 如果小机器人数量 > MCTS 规划点数，则大机器人先不规划
+            my_target = None 
+
+        # 3. 更新大机器人的任务序列
+        if my_target:
+            # 大机器人的目标是 MCTS 规划出来的点
+            self.task_seq = [my_target,] 
+            self.plan_path_sequence() # 规划路径到 MCTS 目标
+
+        # 4. 更新小机器人的目标
+        for i, son in enumerate(sons_list):
+            if i < len(child_targets):
+                son_target = child_targets[i]
+                # 假设 small agent 有一个 set_target 方法
+                son.task_seq = [son_target] 
+                son.plan_path_sequence() # 规划小机器人的路径
+
+        # 存储所有分配的目标点，供其他大机器人做协作惩罚时使用
+        self.target_list = targets_list
+
 
     def _collect_peer_plans(self,all_agents):
         """
@@ -1325,50 +1373,6 @@ class LargeAgent(AgentBase):
 
             for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
                 q.append((x + dx, y + dy))
-
-        return None
-    # 工具函数：A* 寻路
-    def _astar_path(self, start_pos, goal_pos, world):
-        sx, sy = cell_of_pos((start_pos[0], start_pos[1]))
-        gx, gy = cell_of_pos((goal_pos[0], goal_pos[1]))
-
-        open_set = []
-        heapq.heappush(open_set, (0, (sx, sy)))
-        came = {}
-        g_score = { (sx, sy): 0 }
-
-        def h(x, y):  # 曼哈顿启发
-            return abs(x - gx) + abs(y - gy)
-
-        while open_set:
-            _, (x, y) = heapq.heappop(open_set)
-
-            if (x, y) == (gx, gy):
-                # reconstruct
-                path = []
-                cur = (x, y)
-                while cur in came:
-                    path.append(pos_of_cell(*cur))
-                    cur = came[cur]
-                path.reverse()
-                return path
-
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
-                (-1, -1), (-1, 1), (1, -1), (1, 1)]:
-                nx, ny = x + dx, y + dy
-
-                # 越界 or 危险 or 障碍
-                if not (0 <= nx < GRID_W and 0 <= ny < GRID_H):
-                    continue
-                if not self._is_safe_cell(world, nx, ny):
-                    continue
-
-                tentative = g_score[(x, y)] + 1
-                if (nx, ny) not in g_score or tentative < g_score[(nx, ny)]:
-                    g_score[(nx, ny)] = tentative
-                    priority = tentative + h(nx, ny)
-                    heapq.heappush(open_set, (priority, (nx, ny)))
-                    came[(nx, ny)] = (x, y)
 
         return None
 
