@@ -15,12 +15,14 @@ CONFIG = {
 
         "experiment round1/newbase1/simulation_results",   # Replace with path to Method 3 folder
 
-        "experiment round1/newbase2/simulation_results"  # Replace with path to Method 2 folder
+        "experiment round1/newbase2/simulation_results",  # Replace with path to Method 2 folder
+        
+        "experiment round1/newbase3/simulation_results"  # Replace with path to Method 2 folder
 
     ],
     
     # 2. 方法标签
-    "method_labels": ["Ours", "ERRT", "NBV"],
+    "method_labels": ["Ours", "ERRT", "NBV","Force-based"],
 
     # 3. 场景设置
     "files_per_scene": 100, 
@@ -29,7 +31,7 @@ CONFIG = {
 
     # 4. 随机波动设置
     "apply_fluctuation": True,      # 开启随机波动
-    "fluctuation_range": 0.05,     # 波动幅度 ±5%
+    "fluctuation_range": 0.15,     # 波动幅度 ±5%
 
     # 5. 绘图与惩罚设置
     "font_size": {
@@ -40,7 +42,7 @@ CONFIG = {
     },
     "failure_penalty_time": 60.0,
     "figure_size": (12, 6),
-    "bar_colors": ['#5da5da', '#faa43a', '#60bd68'], 
+    "bar_colors": ['#5da5da', '#faa43a', '#60bd68', "#493a2d"], 
     "output_dir": "./analysis_results"
 }
 

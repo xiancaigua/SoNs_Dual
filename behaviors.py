@@ -1521,3 +1521,107 @@ class DMCEExplorationBehavior(Multi_Behavior):
             remaining_targets.remove(best_t)
 
         return assignments
+
+
+class RecklessUESBehavior(Behavior):
+    """
+    鲁莽 UES 策略 (Reckless Uniform Exploration Strategy)
+    特点：
+    1. 在周围均匀采样候选视点。
+    2. 计算信息增益（未知栅格数量）。
+    3. 考虑队友位置，避免目标重叠。
+    4. 鲁莽性：完全不探测/避开地图中的 DANGER 标记。
+    """
+    def __init__(self, sample_radius=8, num_samples=12, min_goal_dist=6):
+        super().__init__()
+        self.sample_radius = sample_radius  # 采样半径（栅格单位）
+        self.num_samples = num_samples      # 采样点数量（例如每30度一个）
+        self.min_goal_dist = min_goal_dist
+
+    def decide(self, agent, sense_data, dt, teammates):
+        # 1. 获取当前栅格坐标
+        gx, gy = cell_of_pos((agent.pos[0], agent.pos[1]))
+        
+        # 获取队友的目标点，用于计算惩罚
+        teammate_goals = []
+        for other in teammates:
+            if other.id != agent.id and other.alive and other.has_goal:
+                teammate_goals.append(cell_of_pos((other.goal[0], other.goal[1])))
+        
+        candidates = []
+        # 2. 均匀采样候选点
+        random_offset = random.uniform(0, 2 * math.pi)
+
+        for i in range(self.num_samples):
+            angle = i * (2 * math.pi / self.num_samples) + random_offset
+            # 计算候选点在栅格地图中的坐标
+            tx = int(gx + self.sample_radius * math.cos(angle))
+            ty = int(gy + self.sample_radius * math.sin(angle))
+            
+            # 边界检查
+            if 0 <= tx < GRID_W and 0 <= ty < GRID_H:
+                # 【鲁莽逻辑】：只检查是否是障碍物，不检查是否是危险区
+                if agent.local_map[ty, tx] != OBSTACLE and agent.local_map[ty, tx] != DANGER:
+                    candidates.append((tx, ty))
+
+        if not candidates:
+            # 如果周围没有可行点，随机给一个方向（保底机制）
+            agent.has_goal = False
+            return
+
+        # 3. 计算每个候选点的层次增益
+        best_score = -float('inf')
+        best_point = None
+        
+
+        for cand in candidates:
+            # A. 体积增益
+            gain_v = self._calculate_unknown_gain(agent, cand)
+            
+            # B. 优先级增益（平滑度）
+            dx, dy = cand[0] - gx, cand[1] - gy
+            move_angle = math.atan2(dy, dx)
+            current_angle = math.atan2(agent.vel[1], agent.vel[0])
+            gain_p = math.cos(move_angle - current_angle)
+            
+            # 【优化点 2：动态惩罚权重】
+            # 即使通过了硬约束，依然保留软惩罚，且惩罚力度要与增益量级匹配
+            # 假设一个采样点最多覆盖 100 个栅格，惩罚项也要能达到这个量级
+            penalty = 0
+            for tg in teammate_goals:
+                dist = math.hypot(cand[0] - tg[0], cand[1] - tg[1])
+                # 使用反比例惩罚，距离越近惩罚激增
+                penalty += 100.0 / (dist + 1.0)
+
+            # 综合评分：加大 gain_p 权重可以减少抖动
+            score = gain_v * 1.5 + gain_p * 5.0 - penalty
+            
+            if score > best_score:
+                best_score = score
+                best_point = cand
+
+        # 4. 输出目标点
+        if best_point:
+            # 将栅格坐标转回像素坐标
+            target_px = pos_of_cell(best_point[0], best_point[1])
+            agent.task_seq = [target_px]
+        #     agent.has_goal = True
+        # else:
+        #     agent.has_goal = False
+
+    def _calculate_unknown_gain(self, agent, point):
+        """简化的信息增益计算：统计候选点周围探测半径内的未知栅格"""
+        gx, gy = point
+        r = int(agent.sensor_range / GRID_CELL) # 探测半径转为栅格数
+        unknown_count = 0
+        
+        # 在该点周围的小范围内采样统计 UNKNOWN
+        step = 2
+        for x in range(gx - r, gx + r + 1, step):
+            for y in range(gy - r, gy + r + 1, step):
+                if 0 <= x < GRID_W and 0 <= y < GRID_H:
+                    # 距离检查，模拟圆形视野
+                    if (x - gx)**2 + (y - gy)**2 <= r**2:
+                        if agent.local_map[y, x] == UNKNOWN:
+                            unknown_count += 1
+        return unknown_count

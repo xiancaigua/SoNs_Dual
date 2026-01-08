@@ -26,7 +26,7 @@ SENSOR_LARGE = 40
 
 AGENT_MAX_SPEED = 10.0  # pixels per second
 LARGE_AGENT_MAX_SPEED = 5.0  # pixels per second
-BRAIN_REASON_INTERVAL = 3.5  # seconds
+BRAIN_REASON_INTERVAL = 2.5  # seconds 3.5 by our method/baseline1/2/3 2.5 for baseline4
 FAST_REASON_INTERVAL = 0.5
 
 AGENT_COMM_RANGE = 100

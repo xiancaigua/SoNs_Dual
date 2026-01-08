@@ -99,7 +99,8 @@ def main(rounds=1):
         if not paused:
             if BASELINE:
                 # world.update_base2(dt, comms, now_time)
-                world.update_base3(dt, comms, now_time)
+                # world.update_base3(dt, comms, now_time)
+                world.update_base4(dt, comms, now_time)
                 # world.update_baseline(dt, comms, now_time)
             else:
                 world.update(dt, comms, now_time)

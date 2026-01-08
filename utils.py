@@ -217,3 +217,124 @@ def get_map_files(directory_path="map"):
             map_data.append((filename, full_path))
             
     return map_data
+
+
+
+
+import matplotlib.pyplot as plt
+from matplotlib import colors
+import numpy as np
+
+def debug_plot_matplotlib(agent, planned_cells=None, title="Path Debug (Matplotlib)"):
+    """
+    使用 Matplotlib 可视化当前地图和路径。
+    程序会在此处暂停，关闭窗口后继续运行。
+    """
+    # 1. 定义颜色映射 (根据你的 parameters.py 中的常量定义)
+    # 假设: UNKNOWN=0, FREE=1, OBSTACLE=2, DANGER=3 (请根据实际修改)
+    # 建立一个与地图状态对应的颜色列表
+    color_list = ['gray', 'white', 'black', 'red', 'gold'] 
+    # 映射顺序需对应: [UNKNOWN, FREE, OBSTACLE, DANGER, VICTIM]
+    cmap = colors.ListedColormap(color_list)
+    bounds = [UNKNOWN, FREE, OBSTACLE, DANGER, VICTIM, VICTIM + 1]
+    norm = colors.BoundaryNorm(bounds, cmap.N)
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    
+    # 2. 绘制地图 (注意: imshow 默认 y轴是 row, x轴是 col)
+    # 我们使用 agent.local_map
+    ax.imshow(agent.local_map, cmap=cmap, norm=norm, origin='upper')
+
+    # 3. 绘制规划路径
+    if planned_cells is not None and len(planned_cells) > 0:
+        planned_cells = np.array(planned_cells)
+        # 注意: planned_cells 存储的是 (row, col)
+        # 在 plot 中，x 是 col (index 1), y 是 row (index 0)
+        ax.plot(planned_cells[:, 1], planned_cells[:, 0], 
+                color='lime', linewidth=2, label='Planned Path', marker='.')
+
+        # 标记起点和终点
+        ax.scatter(planned_cells[0, 1], planned_cells[0, 0], color='blue', s=100, label='Start', zorder=5)
+        ax.scatter(planned_cells[-1, 1], planned_cells[-1, 0], color='orange', s=100, label='Goal', zorder=5)
+
+    # 4. 绘制机器人当前位置
+    cur_c, cur_r = cell_of_pos(agent.pos)
+    ax.scatter(cur_c, cur_r, color='cyan', edgecolors='black', s=150, marker='^', label='Agent')
+
+    # 5. 图表修饰
+    ax.set_title(title)
+    ax.set_xlabel("Grid Column (X)")
+    ax.set_ylabel("Grid Row (Y)")
+    ax.grid(True, which='both', color='lightgray', linewidth=0.5)
+    ax.legend(loc='upper right')
+
+    plt.tight_layout()
+    print(f">>> 调试窗口已打开: {title}。请关闭窗口以继续程序...")
+    plt.show() # 此处会阻塞程序运行
+
+import matplotlib.pyplot as plt
+from matplotlib import colors
+import numpy as np
+
+def visualize_ground_grid(world, title="Ground Truth Map"):
+    """
+    可视化 World 实例中的 ground_grid (真实地图)。
+    """
+    # 1. 定义颜色映射（需确保与 parameters.py 中的常量数值对应）
+    # 假设：UNKNOWN=0, FREE=1, OBSTACLE=2, DANGER=3, VICTIM=4
+    # 如果你的常量定义不同，请调整这里的顺序
+    color_map = {
+        UNKNOWN:  '#A0A0A0',  # 灰色
+        FREE:     '#FFFFFF',  # 白色
+        OBSTACLE: '#2C3E50',  # 深灰色/黑色
+        DANGER:   '#E74C3C',  # 红色
+        VICTIM:   '#F1C40F'   # 金色
+    }
+    
+    # 提取数组
+    grid_data = world.ground_grid
+    h, w = grid_data.shape
+
+    # 创建自定义 Colormap
+    # 按数值顺序排列：0, 1, 2, 3, 4
+    ordered_colors = [color_map[UNKNOWN], color_map[FREE], color_map[OBSTACLE], color_map[DANGER], color_map[VICTIM]]
+    cmap = colors.ListedColormap(ordered_colors)
+    bounds = [0, 1, 2, 3, 4, 5]
+    norm = colors.BoundaryNorm(bounds, cmap.N)
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    # 2. 绘制网格
+    # origin='upper' 确保 (0,0) 在左上角，符合数组索引 [row, col]
+    im = ax.imshow(grid_data, cmap=cmap, norm=norm, origin='upper')
+
+    # 3. 绘制装饰元素
+    ax.set_title(title, fontsize=15)
+    ax.set_xlabel("Column Index (X)", fontsize=12)
+    ax.set_ylabel("Row Index (Y)", fontsize=12)
+
+    # 添加辅助网格线（可选，如果地图很大建议关闭）
+    if w < 100 and h < 100:
+        ax.set_xticks(np.arange(-.5, w, 1), minor=True)
+        ax.set_yticks(np.arange(-.5, h, 1), minor=True)
+        ax.grid(which='minor', color='black', linestyle='-', linewidth=0.5, alpha=0.2)
+
+    # 4. 添加图例
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor=color_map[FREE], edgecolor='gray', label='Free Space'),
+        Patch(facecolor=color_map[OBSTACLE], edgecolor='black', label='Obstacle'),
+        Patch(facecolor=color_map[DANGER], edgecolor='red', label='Danger Zone'),
+        Patch(facecolor=color_map[VICTIM], edgecolor='black', label='Victim')
+    ]
+    ax.legend(handles=legend_elements, bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    # 5. (可选) 如果想同时看到机器人的当前位置
+    for agent in world.agents + world.large_agents:
+        if agent.alive:
+            cx, cy = cell_of_pos(agent.pos)
+            color = 'blue' if not agent.is_large else 'green'
+            ax.scatter(cx, cy, c=color, s=40, edgecolors='white', marker='o')
+
+    plt.tight_layout()
+    plt.show()

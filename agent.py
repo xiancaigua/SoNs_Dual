@@ -9,138 +9,6 @@ from behaviors import *
 from utils import *
 from collections import deque
 
-class APFExplorer:
-    """
-    独立的人工势场探索控制器
-    功能：斥力避障/危险区、引力探索未知区、震荡检测、随机行走逃逸
-    """
-    def __init__(self, repulsion_weight=150.0, attraction_weight=8.0, 
-                 repulsion_radius=30.0, oscillation_threshold=15, 
-                 random_walk_duration=25):
-        # 权重参数
-        self.k_rep = repulsion_weight  # 斥力系数
-        self.k_att = attraction_weight # 引力系数
-        self.rho_0 = repulsion_radius  # 斥力影响范围 (像素)
-        
-        # 震荡检测相关
-        self.pos_history = deque(maxlen=oscillation_threshold)
-        self.oscillation_dist_limit = 5.0 # 在指定步数内移动少于此距离视为震荡
-        
-        # 随机行走状态
-        self.random_walk_timer = 0
-        self.random_walk_steps = random_walk_duration
-        self.rw_angle = 0
-
-    def calculate_force(self, agent_pos, local_map, speed):
-        """
-        核心方法：计算当前位置应该采取的速度向量
-        :return: (vx, vy) 速度向量
-        """
-        # 1. 检查随机行走状态
-        if self.random_walk_timer > 0:
-            self.random_walk_timer -= 1
-            return self._get_random_walk_vel(speed)
-
-        # 2. 震荡检测
-        self.pos_history.append(agent_pos)
-        if self._is_oscillating():
-            self.random_walk_timer = self.random_walk_steps
-            self.rw_angle = random.uniform(0, 2 * math.pi)
-            return self._get_random_walk_vel(speed)
-
-        # 3. 计算人工势场
-        fx, fy = 0.0, 0.0
-        
-        # 斥力：避开 OBSTACLE 和 DANGER
-        # 吸引力：向最近的 UNKNOWN 移动
-        rep_force = self._compute_repulsion(agent_pos, local_map)
-        att_force = self._compute_attraction(agent_pos, local_map)
-        
-        fx = rep_force[0] + att_force[0]
-        fy = rep_force[1] + att_force[1]
-
-        # 4. 归一化速度
-        mag = math.hypot(fx, fy)
-        if mag > 1e-3:
-            return (fx / mag * speed, fy / mag * speed)
-        else:
-            # 如果合力为0，给一个微小的随机扰动避免死锁
-            angle = random.uniform(0, 2 * math.pi)
-            return (math.cos(angle) * speed, math.sin(angle) * speed)
-
-    def _compute_repulsion(self, pos, local_map):
-        """计算障碍物和危险区的斥力"""
-        fx, fy = 0.0, 0.0
-        px, py = pos
-        # 搜索范围：将像素距离转换为栅格半径
-        r_cell = int(self.rho_0 / 5.0) # 假设 GRID_CELL=5
-        ci, cj = int(px // 5.0), int(py // 5.0) # 假设 pos_to_cell 逻辑
-
-        for i in range(ci - r_cell, ci + r_cell + 1):
-            for j in range(cj - r_cell, cj + r_cell + 1):
-                if 0 <= i < local_map.shape[1] and 0 <= j < local_map.shape[0]:
-                    val = local_map[j, i]
-                    # 只对障碍物和危险区产生斥力
-                    if val in (1, 3): # 假设 1:OBSTACLE, 3:DANGER
-                        gx, gy = i * 5.0 + 2.5, j * 5.0 + 2.5 # cell_to_pos
-                        dx, dy = px - gx, py - gy
-                        dist = math.hypot(dx, dy) + 0.1
-                        
-                        if dist < self.rho_0:
-                            # 斥力公式: F = k * (1/dist - 1/rho0) * (1/dist^2)
-                            mag = self.k_rep * (1.0/dist - 1.0/self.rho_0) / (dist**2)
-                            fx += (dx / dist) * mag
-                            fy += (dy / dist) * mag
-        return fx, fy
-
-    def _compute_attraction(self, pos, local_map):
-        """计算未知区域的吸引力"""
-        px, py = pos
-        # 寻找最近的未知栅格 (简化的启发式搜索)
-        target = self._find_nearest_unknown(pos, local_map)
-        if not target:
-            return (0.0, 0.0)
-        
-        tx, ty = target
-        dx, dy = tx - px, ty - py
-        dist = math.hypot(dx, dy) + 0.1
-        
-        # 吸引力公式：常数力
-        return (dx / dist * self.k_att, dy / dist * self.k_att)
-
-    def _find_nearest_unknown(self, pos, local_map, max_r=25):
-        """在局部地图内寻找最近的 UNKNOWN 单元格"""
-        px, py = pos
-        ci, cj = int(px // 5.0), int(py // 5.0)
-        
-        for r in range(1, max_r):
-            # 简单的方形周界搜索
-            for di in range(-r, r + 1):
-                for dj in [-r, r]:
-                    for ni, nj in [(ci+di, cj+dj), (ci+dj, cj+di)]:
-                        if 0 <= ni < local_map.shape[1] and 0 <= nj < local_map.shape[0]:
-                            if local_map[nj, ni] == 255: # 假设 255:UNKNOWN
-                                return (ni * 5.0 + 2.5, nj * 5.0 + 2.5)
-        return None
-
-    def _is_oscillating(self):
-        """检查是否陷入震荡"""
-        if len(self.pos_history) < self.pos_history.maxlen:
-            return False
-        # 计算历史首尾位移
-        p_start = self.pos_history[0]
-        p_end = self.pos_history[-1]
-        dist = math.hypot(p_end[0] - p_start[0], p_end[1] - p_start[1])
-        return dist < self.oscillation_dist_limit
-
-    def _get_random_walk_vel(self, speed):
-        """获取随机行走的速度向量"""
-        # 带有小弧度偏转的随机行走（比纯随机平滑）
-        self.rw_angle += random.uniform(-0.3, 0.3)
-        return (math.cos(self.rw_angle) * speed, math.sin(self.rw_angle) * speed)
-
-
-
 # ===============================
 # Agent（小节点）类
 # ===============================
@@ -177,7 +45,7 @@ class AgentBase:
         if behavior is not None:
             self.behavior = behavior
         else:
-            self.behavior = PathPlanningBehavior()
+            self.behavior = RecklessUESBehavior()
 
     # =====================================================
     # 感知函数：不再能直接探测到危险区
@@ -438,6 +306,7 @@ class AgentBase:
             planned_world.append((px, py))
 
         self.planned_path = planned_world
+        self.planned_cell = planned_cells
         self.has_goal = True
 
         if len(planned_world) > 0:
@@ -636,6 +505,7 @@ class AgentBase:
             new_y = y + self.speed * dy / dist
 
         self.pos = (new_x, new_y)
+        self.vel = (new_x - x, new_y - y)
 
         # self.energy -= self.energy_decay_rate * math.hypot(new_x - x, new_y - y)
         # if self.energy <= 0:

@@ -103,6 +103,7 @@ class World:
         self.brain = BrainAgent(-1, self.spawn_center[0],self.spawn_center[1])
         self.spawn_agents(NUM_LARGE)
         self.place_victim()   # victim放在最后，以确保存在brain node
+        random.seed(time.time())
     # def set_state(self):
     #     for la in self.large_agents:
     #         la.multi_behavior = ERRTFrontierAssignmentBehavior()
@@ -822,6 +823,107 @@ class World:
             # 如果列表发生了变化，则更新
             if len(new_son_ids) != initial_count:
                 la.son_ids = new_son_ids
+
+
+    def update_base4(self, dt, comms: Communication, now_time):
+            self.time += dt
+
+            # 1. 更新所有机器人本地观测（感知环境）
+            for a in self.agents + self.large_agents:
+                if a.alive:
+                    a.update_local_map_from_sensing(self)
+
+            # 2. 救援目标检查（由大机器人判定）
+            victim_pos = self.victim.pos
+            victim_cell = cell_of_pos(victim_pos)
+            for la in self.large_agents:
+                if la.known_map[victim_cell[1], victim_cell[0]] != UNKNOWN:
+                    self.victim.rescued = True
+
+            # 3. 地图同步：将小机器人的发现汇总到大机器人，再汇总到全局/Brain
+            # 注意：这里需要先清理一遍死掉的机器人，确保同步的是存活节点的数据
+            self.agents = [a for a in self.agents if a.alive]
+            self.large_agents = [la for la in self.large_agents if la.alive]
+
+            for a in self.agents:
+                for la in self.large_agents:
+                    if a.father_id == la.id:
+                        # 鲁莽策略下，小机器人只同步 OBSTACLE/FREE，大机器人负责标记 DANGER
+                        la.known_map = np.maximum(la.known_map, a.local_map)
+                        la.local_map = la.known_map
+                        self.known_grid = np.maximum(self.known_grid, la.known_map)
+            
+            if hasattr(self, 'brain') and self.brain:
+                self.brain.known_map = self.known_grid
+
+            # 4. 【核心决策步骤】：调用鲁莽 UES 策略
+            # 我们在这里统一为所有存活的小机器人计算下一个目标点
+            if now_time - self.brain.last_reason_time >= BRAIN_REASON_INTERVAL:
+                for a in self.agents + self.large_agents:
+                    if a.alive and isinstance(a.behavior, RecklessUESBehavior):
+                        # 传入 None 作为 sense_data，因为信息已更新在 a.local_map 中
+                        # decide 内部会计算均匀采样、信息增益并排除队友目标
+                        a.behavior.decide(a, None, dt, teammates=self.agents + self.large_agents)
+                        a.plan_path_sequence()
+                self.brain.last_reason_time = now_time
+
+            # 5. 大机器人的任务处理：处理死亡队列，生成补员
+            for la in self.large_agents:
+                if la.death_queue:
+                    # 补员机制：基于死亡信息在大机器人附近生成新节点
+                    self.spawn_reinforcement_agent(la.id)
+                    la.recognize_danger_area(self) # 识别危险
+                    death_info = la.death_queue.pop(0)
+                    pos = death_info['dead_pos']
+                    grid_p = cell_of_pos(pos)
+                    la.known_map[grid_p[1], grid_p[0]] = DANGER # 标记致死点
+                
+            # 6. 运动执行与轨迹记录
+            for a in self.agents + self.large_agents:
+                if a.alive:
+                    # 执行基于当前 goal 的物理运动
+                    a.step_motion()
+                    self.mark_visited(a.pos[0], a.pos[1], a.is_large)
+                    
+                    # 能量消耗计算
+                    # a.energy_cost += a.energy_cost_rate
+                    # if a.energy_cost > a.energy_max:
+                    #     a.alive = False
+
+            # 7. 死亡判定与父节点重分配逻辑（保持你原来的逻辑）
+            self.check_and_handle_deaths()
+
+            # 7.1 处理父节点死亡后的孤儿节点重分配
+            dead_large_ids = {la.id for la in self.large_agents if not la.alive}
+            alive_large_map = {la.id: la for la in self.large_agents if la.alive}
+            
+            self.wasted_large_agents.extend([la for la in self.large_agents if not la.alive])
+            self.large_agents = list(alive_large_map.values())
+
+            alive_agents = []
+            for a in self.agents:
+                if not a.alive:
+                    self.wasted_agents.append(a)
+                else:
+                    if a.father_id in dead_large_ids:
+                        if alive_large_map:
+                            # 找最近的活着的大机器人当爹
+                            nearest_la = min(
+                                alive_large_map.values(), 
+                                key=lambda la: distance(a.pos, la.pos)
+                            )
+                            a.father_id = nearest_la.id
+                        else:
+                            a.father_id = None
+                    alive_agents.append(a)
+            
+            self.agents = alive_agents
+
+            # 7.2 更新大机器人的子节点列表
+            alive_small_agent_ids = {a.id for a in self.agents}
+            for la in self.large_agents:
+                la.son_ids = [cid for cid in la.son_ids if cid in alive_small_agent_ids]
+
 
     def draw(self, screen):
         # draw explored overlay: union of all agents' explored cells => white, else dark gray
